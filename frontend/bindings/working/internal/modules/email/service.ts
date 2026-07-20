@@ -16,6 +16,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 import * as account$0 from "./account/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as provider$0 from "./provider/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as types$0 from "./types/models.js";
 
 /**
@@ -70,6 +73,24 @@ export function Folders(accID: string): $CancellablePromise<string[] | null> {
  */
 export function List(accID: string, folder: string): $CancellablePromise<types$0.Message[] | null> {
     return $Call.ByID(1288993830, accID, folder);
+}
+
+/**
+ * ProviderList는 사전 정의된 이메일 제공자 목록을 반환한다.
+ * 프론트엔드에서 계정 추가 시 드롭다운으로 표시하거나,
+ * 이메일 도메인 자동 인식에 사용한다.
+ */
+export function ProviderList(): $CancellablePromise<provider$0.Provider[] | null> {
+    return $Call.ByID(2481272719);
+}
+
+/**
+ * ProviderLookupByEmail은 이메일 주소의 도메인으로 제공자를 찾는다.
+ * 일치하는 사전 정의 제공자가 없으면 nil을 반환한다.
+ * 프론트엔드에서 이메일 입력 중 서버 필드 자동 채우기에 사용한다.
+ */
+export function ProviderLookupByEmail(email: string): $CancellablePromise<provider$0.Provider | null> {
+    return $Call.ByID(874965208, email);
 }
 
 /**

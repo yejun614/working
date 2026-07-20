@@ -23,6 +23,7 @@ working/
 │        ├─ service.go              # Wails Service (프론트엔드 API 진입점)
 │        ├─ types/types.go          # Message, Attachment
 │        ├─ account/account.go      # Account, ServerConfig 타입
+│        ├─ provider/provider.go    # 사전 정의 제공자 (Naver/Gmail/...)
 │        ├─ store/store.go          # 계정 메타데이터 + 키체인 자격증명
 │        ├─ smtp/                   # SMTP 발송 (none/STARTTLS/TLS)
 │        └─ imap/                   # IMAP 수신 (폴더 목록, 메시지 조회)
@@ -39,6 +40,10 @@ working/
 - **계정 관리**: 복수 계정 등록/편집/삭제. 비밀번호·토큰은 OS 키체인에
   저장되고 메타데이터(이름, 서버 정보 등)는 사용자 데이터 디렉토리의
   JSON 파일에 저장된다. 계정 삭제 시 키체인 항목도 함께 제거된다.
+- **제공자 자동 입력**: Naver/Daum/Gmail/Outlook/Yahoo/iCloud 등 대표
+  이메일 서비스의 SMTP/IMAP 서버 설정을 사전 정의. 이메일 주소 도메인을
+  인식해 서버 필드를 자동으로 채우고, 앱 비밀번호 안내 링크를 표시한다.
+  `internal/modules/email/provider/provider.go`에서 목록을 관리한다.
 - **메일 전송 (SMTP)**: `none` / `STARTTLS` / `TLS(암시적)` 지원.
   첨부파일 MIME 인코딩, RFC 2047 제목/표시명 인코딩 포함.
 - **메일 수신 (IMAP)**: 폴더 목록 조회, 폴더별 최신 메시지 50건 조회.
@@ -51,6 +56,8 @@ working/
 
 | 메서드              | 설명                                                |
 | ------------------- | --------------------------------------------------- |
+| `ProviderList()`    | 사전 정의된 제공자 목록                             |
+| `ProviderLookupByEmail(email)` | 이메일 도메인으로 제공자 조회           |
 | `AccountList()`     | 등록된 계정 목록                                    |
 | `AccountGet(id)`    | ID로 계정 조회                                      |
 | `AccountCreate(acc, credential)` | 신규 계정 등록 (자격증명은 키체인 저장) |

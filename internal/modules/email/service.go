@@ -15,6 +15,7 @@ import (
 
 	"working/internal/modules/email/account"
 	"working/internal/modules/email/imap"
+	"working/internal/modules/email/provider"
 	"working/internal/modules/email/smtp"
 	"working/internal/modules/email/store"
 	"working/internal/modules/email/types"
@@ -45,6 +46,20 @@ func NewService() (*Service, error) {
 // ServiceShutdown은 Wails 종료 시 호출되는 훅이다.
 // 현재는 유지할 상태가 없으므로 아무 작업도 하지 않는다.
 func (s *Service) ServiceShutdown() {}
+
+// ProviderList는 사전 정의된 이메일 제공자 목록을 반환한다.
+// 프론트엔드에서 계정 추가 시 드롭다운으로 표시하거나,
+// 이메일 도메인 자동 인식에 사용한다.
+func (s *Service) ProviderList() []provider.Provider {
+	return provider.All()
+}
+
+// ProviderLookupByEmail은 이메일 주소의 도메인으로 제공자를 찾는다.
+// 일치하는 사전 정의 제공자가 없으면 nil을 반환한다.
+// 프론트엔드에서 이메일 입력 중 서버 필드 자동 채우기에 사용한다.
+func (s *Service) ProviderLookupByEmail(email string) *provider.Provider {
+	return provider.LookupByEmail(email)
+}
 
 // AccountList는 등록된 모든 계정을 반환한다(자격증명 제외).
 func (s *Service) AccountList() ([]account.Account, error) {
