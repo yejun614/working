@@ -136,13 +136,13 @@ async function save() {
         <div v-if="error" class="alert error">{{ error }}</div>
 
         <div class="provider-row">
-          <label class="provider-select">
+          <div class="field provider-select">
             <span>제공자 (자동 입력)</span>
             <select v-model="selectedProviderId">
               <option value="">— 직접 입력 —</option>
               <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
-          </label>
+          </div>
           <div v-if="detectedProvider?.note" class="provider-note">
             <div class="note-text">{{ detectedProvider.note }}</div>
             <a v-if="detectedProvider.helpUrl" :href="detectedProvider.helpUrl" target="_blank" rel="noopener" class="note-link">도움말 ↗</a>
@@ -150,68 +150,68 @@ async function save() {
         </div>
 
         <div class="grid">
-          <label>
+          <div class="field">
             <span>표시 이름</span>
             <input v-model="name" placeholder="회사 메일" />
-          </label>
-          <label>
+          </div>
+          <div class="field">
             <span>이메일 *</span>
             <input v-model="email" type="email" :disabled="isEdit" placeholder="you@example.com" />
-          </label>
-          <label>
+          </div>
+          <div class="field">
             <span>발신자 이름</span>
             <input v-model="displayName" placeholder="홍길동" />
-          </label>
-          <label>
+          </div>
+          <div class="field">
             <span>인증 방식</span>
             <select v-model="authType">
               <option value="password">비밀번호</option>
             </select>
-          </label>
-          <label class="full">
+          </div>
+          <div class="field full">
             <span>{{ isEdit ? '비밀번호/토큰 (변경 시에만 입력)' : '비밀번호/토큰 *' }}</span>
             <input v-model="credential" type="password" autocomplete="new-password" />
-          </label>
+          </div>
         </div>
 
         <h3>SMTP (발송)</h3>
         <div class="grid">
-          <label>
+          <div class="field">
             <span>호스트</span>
             <input v-model="smtpHost" placeholder="smtp.example.com" />
-          </label>
-          <label>
+          </div>
+          <div class="field">
             <span>포트</span>
             <input v-model.number="smtpPort" type="number" />
-          </label>
-          <label>
+          </div>
+          <div class="field">
             <span>암호화</span>
             <select v-model="smtpEncryption">
               <option value="none">없음</option>
               <option value="starttls">STARTTLS</option>
               <option value="tls">TLS</option>
             </select>
-          </label>
+          </div>
         </div>
 
         <h3>IMAP (수신)</h3>
         <div class="grid">
-          <label>
+          <div class="field">
             <span>호스트</span>
             <input v-model="imapHost" placeholder="imap.example.com" />
-          </label>
-          <label>
+          </div>
+          <div class="field">
             <span>포트</span>
             <input v-model.number="imapPort" type="number" />
-          </label>
-          <label>
+          </div>
+          <div class="field">
             <span>암호화</span>
             <select v-model="imapEncryption">
               <option value="none">없음</option>
               <option value="starttls">STARTTLS</option>
               <option value="tls">TLS</option>
             </select>
-          </label>
+          </div>
         </div>
       </div>
 
@@ -258,7 +258,7 @@ async function save() {
   margin-bottom: 12px;
 }
 .grid .full { grid-column: 1 / -1; }
-label {
+.field {
   display: flex; flex-direction: column; gap: 4px;
   font-size: 12px; color: var(--muted);
 }
@@ -312,11 +312,6 @@ h3 {
 }
 .provider-select {
   flex: 0 0 220px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--muted);
 }
 .provider-note {
   flex: 1;
