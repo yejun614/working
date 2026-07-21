@@ -51,10 +51,11 @@ body {
 #app, #root { display: contents; }
 
 /* Interactive elements: clickable (not draggable) and, for the input, selectable. */
-.brand-mark, .brand-badge, .input-box, .btn, .footer-docs, .toast {
+.brand-mark, .brand-badge, .input-box, .btn, .footer-docs, .toast,
+input, textarea, select, button, label, a, form {
     --wails-draggable: no-drag;
 }
-.input, input[type="text"] {
+.input, input, textarea {
     -webkit-user-select: text;
     user-select: text;
 }
