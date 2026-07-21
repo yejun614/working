@@ -6,6 +6,7 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
+	calendarmod "working/internal/modules/calendar"
 	emailmod "working/internal/modules/email"
 )
 
@@ -24,11 +25,17 @@ func main() {
 		log.Fatalf("이메일 모듈 초기화 실패: %v", err)
 	}
 
+	calendarService, err := calendarmod.NewService()
+	if err != nil {
+		log.Fatalf("캘린더 모듈 초기화 실패: %v", err)
+	}
+
 	app := application.New(application.Options{
 		Name:        "working",
 		Description: "업무 보조 프로그램 - 모듈식 확장",
 		Services: []application.Service{
 			application.NewService(emailService),
+			application.NewService(calendarService),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
@@ -39,9 +46,9 @@ func main() {
 	})
 
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:   "working",
-		Width:   1000,
-		Height:  700,
+		Title:  "working",
+		Width:  1000,
+		Height: 700,
 		Mac: application.MacWindow{
 			InvisibleTitleBarHeight: 50,
 			Backdrop:                application.MacBackdropTranslucent,
