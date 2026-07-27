@@ -18,12 +18,89 @@
     --s-4: 2.618rem;   /* φ²  */
     --s-5: 4.236rem;   /* φ³  */
 
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-        sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+    font-family: "Pretendard", "Pretendard JP", sans-serif;
     color-scheme: dark;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     -webkit-text-size-adjust: 100%;
+}
+
+/* 앱 배포본에 폰트를 포함해 네트워크 연결 없이도 모든 화면에서 동일한
+   글꼴을 사용한다. Pretendard가 지원하지 않는 일본어 글리프는
+   Pretendard JP가 이어서 처리한다. */
+@font-face {
+    font-family: "Pretendard";
+    src: url("/fonts/Pretendard-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Pretendard";
+    src: url("/fonts/Pretendard-Medium.woff2") format("woff2");
+    font-weight: 500;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Pretendard";
+    src: url("/fonts/Pretendard-SemiBold.woff2") format("woff2");
+    font-weight: 600;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Pretendard";
+    src: url("/fonts/Pretendard-Bold.woff2") format("woff2");
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Pretendard";
+    src: url("/fonts/Pretendard-ExtraBold.woff2") format("woff2");
+    font-weight: 800;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Pretendard JP";
+    src: url("/fonts/PretendardJP-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Pretendard JP";
+    src: url("/fonts/PretendardJP-Medium.woff2") format("woff2");
+    font-weight: 500;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Pretendard JP";
+    src: url("/fonts/PretendardJP-SemiBold.woff2") format("woff2");
+    font-weight: 600;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Pretendard JP";
+    src: url("/fonts/PretendardJP-Bold.woff2") format("woff2");
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "Pretendard JP";
+    src: url("/fonts/PretendardJP-ExtraBold.woff2") format("woff2");
+    font-weight: 800;
+    font-style: normal;
+    font-display: swap;
+}
+
+:root[data-theme="light"] {
+    color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -34,21 +111,33 @@ html {
 html, body {
     margin: 0;
     color: var(--text);
+    font-family: "Pretendard", "Pretendard JP", sans-serif;
 }
+
+button, input, textarea, select, optgroup {
+    font-family: inherit;
+}
+
 body {
     overflow-x: hidden;
     /* Nothing in the chrome is selectable (it's an app, not a document); the
        text input opts back in below. */
     -webkit-user-select: none;
     user-select: none;
-    /* Drag the window by its background. Interactive controls opt out with
-       --wails-draggable: no-drag (the property inherits). */
-    --wails-draggable: drag;
+    /* 앱 내부의 드래그가 Wails 창 이동으로 가로채이지 않도록 기본값은
+       no-drag으로 둔다. 창을 이동할 수 있는 영역은 별도로 지정한다. */
+    --wails-draggable: no-drag;
 }
 
 /* Framework mount nodes (#app / #root) shouldn't affect layout, so the
    body flex centering applies directly to .container. */
 #app, #root { display: contents; }
+
+/* 탭 바의 빈 영역만 창 이동 영역으로 사용한다. 버튼은 아래 규칙에서
+   no-drag으로 덮어써서 클릭과 텍스트 선택을 정상적으로 유지한다. */
+.tab-bar {
+    --wails-draggable: drag;
+}
 
 /* Interactive elements: clickable (not draggable) and, for the input, selectable. */
 .brand-mark, .brand-badge, .input-box, .btn, .footer-docs, .toast,
@@ -81,11 +170,6 @@ body {
     min-height: 100dvh;
     display: flex;
     flex-direction: column;             /* content area + footer pinned to the bottom */
-    /* Respect mobile safe areas (notch / home indicator). No bottom padding:
-       the footer sits flush at the bottom edge. */
-    /* Wider outer margins on the golden scale (φ² top/right, φ³ left). */
-    padding: max(var(--s-4), env(safe-area-inset-top)) max(var(--s-4), env(safe-area-inset-right))
-             0 max(var(--s-5), env(safe-area-inset-left));
 }
 
 .container {

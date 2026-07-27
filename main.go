@@ -6,8 +6,10 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
+	"working/internal/config"
 	calendarmod "working/internal/modules/calendar"
 	emailmod "working/internal/modules/email"
+	kanbanmod "working/internal/modules/kanban"
 )
 
 // Wails uses Go's `embed` package to embed the frontend files into the binary.
@@ -19,6 +21,9 @@ import (
 var assets embed.FS
 
 func main() {
+	if err := config.LoadEnv(); err != nil {
+		log.Fatalf("환경변수 초기화 실패: %v", err)
+	}
 
 	emailService, err := emailmod.NewService()
 	if err != nil {
@@ -30,12 +35,18 @@ func main() {
 		log.Fatalf("캘린더 모듈 초기화 실패: %v", err)
 	}
 
+	kanbanService, err := kanbanmod.NewService()
+	if err != nil {
+		log.Fatalf("칸반 모듈 초기화 실패: %v", err)
+	}
+
 	app := application.New(application.Options{
 		Name:        "working",
 		Description: "업무 보조 프로그램 - 모듈식 확장",
 		Services: []application.Service{
 			application.NewService(emailService),
 			application.NewService(calendarService),
+			application.NewService(kanbanService),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
