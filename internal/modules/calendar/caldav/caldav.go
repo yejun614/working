@@ -4,11 +4,20 @@ package caldav
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+
+	"working/internal/config"
 	"working/internal/modules/calendar/account"
 	"working/internal/modules/calendar/ical"
 	"working/internal/modules/calendar/types"
@@ -25,18 +34,84 @@ type Client struct {
 	// password는 비밀번호 또는 앱 비밀번호.
 	password string
 
+	// authType은 Basic 또는 OAuth2 인증 방식이다.
+	authType account.AuthType
+
 	// httpClient는 요청에 사용하는 HTTP 클라이언트.
 	httpClient *http.Client
 }
 
 // NewClient는 CalDAV 클라이언트를 생성한다.
-func NewClient(acc *account.Account, credential string) *Client {
-	return &Client{
+func NewClient(acc *account.Account, credential string, onTokenRefresh ...func(string) error) (*Client, error) {
+	c := &Client{
 		url:        strings.TrimRight(acc.CalDAVURL, "/"),
 		username:   acc.Username,
 		password:   credential,
+		authType:   acc.AuthType,
 		httpClient: &http.Client{},
 	}
+	if acc.AuthType == account.AuthOAuth2 {
+		if strings.TrimSpace(config.GoogleClientID()) == "" {
+			return nil, fmt.Errorf("GOOGLE_CLIENT_ID가 설정되지 않았습니다")
+		}
+		var token oauth2.Token
+		if err := json.Unmarshal([]byte(credential), &token); err != nil {
+			return nil, fmt.Errorf("OAuth 토큰 파싱 실패: %w", err)
+		}
+		oauthConfig := &oauth2.Config{ClientID: config.GoogleClientID(), ClientSecret: config.GoogleClientSecret(), Endpoint: google.Endpoint}
+		source := &savingTokenSource{
+			source: oauthConfig.TokenSource(context.Background(), &token),
+			save: func(token *oauth2.Token) error {
+				if len(onTokenRefresh) == 0 || onTokenRefresh[0] == nil {
+					return nil
+				}
+				data, err := json.Marshal(token)
+				if err != nil {
+					return err
+				}
+				return onTokenRefresh[0](string(data))
+			},
+		}
+		c.httpClient = oauth2.NewClient(context.Background(), source)
+		c.url = googleCalDAVURL(c.url, acc.Username)
+	}
+	return c, nil
+}
+
+// savingTokenSource는 OAuth 토큰이 갱신되었을 때 키체인 저장 콜백을 실행한다.
+type savingTokenSource struct {
+	source oauth2.TokenSource
+	save   func(*oauth2.Token) error
+	mu     sync.Mutex
+	last   string
+}
+
+func (s *savingTokenSource) Token() (*oauth2.Token, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token, err := s.source.Token()
+	if err != nil {
+		return nil, err
+	}
+	if token.AccessToken != s.last {
+		s.last = token.AccessToken
+		if err := s.save(token); err != nil {
+			return nil, err
+		}
+	}
+	return token, nil
+}
+
+// googleCalDAVURL은 Google CalDAV의 principal 시작점으로 URL을 보정한다.
+// Google은 /caldav/v2 아래에 캘린더 ID와 /user 경로를 요구한다.
+func googleCalDAVURL(base, username string) string {
+	if !strings.Contains(base, "apidata.googleusercontent.com/caldav/v2") {
+		return base
+	}
+	if strings.HasSuffix(base, "/user") || strings.HasSuffix(base, "/events") {
+		return base
+	}
+	return strings.TrimRight(base, "/") + "/" + url.PathEscape(username) + "/user"
 }
 
 // Calendars는 사용자의 캘린더(폴더) 목록을 조회한다.
@@ -177,28 +252,24 @@ func (c *Client) findPrincipalURL() (string, error) {
     <D:current-user-principal/>
   </D:prop>
 </D:propfind>`
-	resp, err := c.request("PROPFIND", c.url, []byte(body), "application/xml; charset=utf-8")
+	resp, err := c.requestWithDepth("PROPFIND", c.url, []byte(body), "application/xml; charset=utf-8", "0")
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 207 {
-		return "", fmt.Errorf("principal 조회 실패: HTTP %d", resp.StatusCode)
+		return "", responseError(fmt.Sprintf("principal 조회 실패 (URL: %s)", c.url), resp)
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
-	href := extractTag(data, []byte("current-user-principal"))
+	href := findPropertyHref(data, "current-user-principal")
 	if href == "" {
 		// principal을 못 찾으면 URL 자체를 principal로 간주.
 		return c.url, nil
 	}
-	h := extractTag([]byte(href), []byte("href"))
-	if h == "" {
-		return c.url, nil
-	}
-	return c.resolveURL(h), nil
+	return c.resolveURL(href), nil
 }
 
 // findCalendarHomeSet은 PROPFIND로 calendar-home-set URL을 찾는다.
@@ -209,27 +280,23 @@ func (c *Client) findCalendarHomeSet(principalURL string) (string, error) {
     <C:calendar-home-set/>
   </D:prop>
 </D:propfind>`
-	resp, err := c.request("PROPFIND", principalURL, []byte(body), "application/xml; charset=utf-8")
+	resp, err := c.requestWithDepth("PROPFIND", principalURL, []byte(body), "application/xml; charset=utf-8", "0")
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 207 {
-		return principalURL, nil
+		return "", responseError("calendar-home-set 조회 실패", resp)
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return principalURL, nil
 	}
-	hs := extractTag(data, []byte("calendar-home-set"))
-	if hs == "" {
+	href := findPropertyHref(data, "calendar-home-set")
+	if href == "" {
 		return principalURL, nil
 	}
-	h := extractTag([]byte(hs), []byte("href"))
-	if h == "" {
-		return principalURL, nil
-	}
-	return c.resolveURL(h), nil
+	return c.resolveURL(href), nil
 }
 
 // listCalendars는 calendar-home-set 하위 캘린더 목록을 조회한다.
@@ -262,49 +329,63 @@ func (c *Client) listCalendars(homeSetURL string) ([]types.CalendarInfo, error) 
 	if err != nil {
 		return nil, err
 	}
-	return parseCalendarList(data, homeSetURL), nil
+	calendars := parseCalendarList(data, homeSetURL)
+	if len(calendars) == 0 {
+		return nil, fmt.Errorf("캘린더 목록 응답에서 캘린더를 찾지 못했습니다")
+	}
+	return calendars, nil
 }
 
 // parseCalendarList는 PROPFIND 응답에서 캘린더 목록을 추출한다.
 func parseCalendarList(data []byte, baseURL string) []types.CalendarInfo {
-	var out []types.CalendarInfo
-	responses := splitAll(data, []byte("<D:response>"))
-	if len(responses) == 0 {
-		responses = splitAll(data, []byte("<response>"))
+	var multistatus davMultistatus
+	if err := xml.Unmarshal(data, &multistatus); err != nil {
+		return nil
 	}
-	for _, respChunk := range responses {
-		href := extractTag(respChunk, []byte("href"))
+
+	var out []types.CalendarInfo
+	for _, response := range multistatus.Responses {
+		var prop davProp
+		for _, propstat := range response.Propstats {
+			prop = propstat.Prop
+			break
+		}
+		href := strings.TrimSpace(response.Href)
 		if href == "" {
 			continue
 		}
 		// 캘린더 리소스 타입인지 확인.
-		if !bytes.Contains(respChunk, []byte("calendar")) {
+		if prop.ResourceType.Calendar == nil {
 			continue
 		}
-		name := textOf(respChunk, []byte("displayname"))
-		color := textOf(respChunk, []byte("calendar-color"))
-		desc := textOf(respChunk, []byte("calendar-description"))
 		out = append(out, types.CalendarInfo{
 			Href:        href,
-			Name:        name,
-			Color:       color,
-			Description: desc,
+			Name:        strings.TrimSpace(prop.DisplayName),
+			Color:       strings.TrimSpace(prop.CalendarColor),
+			Description: strings.TrimSpace(prop.CalendarDescription),
 		})
 	}
+	_ = baseURL
 	return out
 }
 
 // parseReportResponse는 REPORT 응답에서 일정 목록을 추출한다.
 func parseReportResponse(data []byte, calendarID string) ([]types.Event, error) {
-	var out []types.Event
-	responses := splitAll(data, []byte("<D:response>"))
-	if len(responses) == 0 {
-		responses = splitAll(data, []byte("<response>"))
+	var multistatus davMultistatus
+	if err := xml.Unmarshal(data, &multistatus); err != nil {
+		return nil, fmt.Errorf("CalDAV REPORT XML 파싱 실패: %w", err)
 	}
-	for _, respChunk := range responses {
-		href := extractTag(respChunk, []byte("href"))
-		etag := textOf(respChunk, []byte("getetag"))
-		calData := textOf(respChunk, []byte("calendar-data"))
+
+	var out []types.Event
+	for _, response := range multistatus.Responses {
+		var prop davProp
+		for _, propstat := range response.Propstats {
+			prop = propstat.Prop
+			break
+		}
+		href := strings.TrimSpace(response.Href)
+		etag := strings.TrimSpace(prop.ETag)
+		calData := strings.TrimSpace(prop.CalendarData)
 		if calData == "" {
 			continue
 		}
@@ -321,8 +402,66 @@ func parseReportResponse(data []byte, calendarID string) ([]types.Event, error) 
 	return out, nil
 }
 
+// davMultistatus는 CalDAV/DAV 응답의 네임스페이스 접두사와 무관하게
+// response 요소를 읽기 위한 최소 XML 구조체다. encoding/xml은 태그의
+// 접두사(D:, d:, C:)가 아니라 Local 이름을 기준으로 매칭한다.
+type davMultistatus struct {
+	Responses []davResponse `xml:"response"`
+}
+
+type davResponse struct {
+	Href      string        `xml:"href"`
+	Propstats []davPropstat `xml:"propstat"`
+}
+
+type davPropstat struct {
+	Prop davProp `xml:"prop"`
+}
+
+type davProp struct {
+	DisplayName         string          `xml:"displayname"`
+	CalendarDescription string          `xml:"calendar-description"`
+	CalendarColor       string          `xml:"calendar-color"`
+	ResourceType        davResourceType `xml:"resourcetype"`
+	ETag                string          `xml:"getetag"`
+	CalendarData        string          `xml:"calendar-data"`
+}
+
+type davResourceType struct {
+	Calendar *struct{} `xml:"calendar"`
+}
+
+// findPropertyHref는 지정한 DAV/CalDAV 속성 내부의 href를 반환한다.
+// 응답 자체의 href와 속성 내부 href가 모두 존재하므로 문서 전체의 첫 href를
+// 사용하면 principal URL 또는 캘린더 홈 URL을 잘못 선택할 수 있다.
+func findPropertyHref(data []byte, property string) string {
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return ""
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || start.Name.Local != property {
+			continue
+		}
+		var value struct {
+			Href string `xml:"href"`
+		}
+		if err := decoder.DecodeElement(&value, &start); err != nil {
+			return ""
+		}
+		return strings.TrimSpace(value.Href)
+	}
+}
+
 // request는 지정한 메서드/URL로 HTTP 요청을 보낸다.
 func (c *Client) request(method, url string, body []byte, contentType string) (*http.Response, error) {
+	return c.requestWithDepth(method, url, body, contentType, "")
+}
+
+// requestWithDepth는 DAV 요청에 필요한 Depth 헤더를 설정해 HTTP 요청을 보낸다.
+func (c *Client) requestWithDepth(method, url string, body []byte, contentType, depth string) (*http.Response, error) {
 	req, err := http.NewRequest(method, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -331,11 +470,28 @@ func (c *Client) request(method, url string, body []byte, contentType string) (*
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
+	if depth != "" {
+		req.Header.Set("Depth", depth)
+	}
 	return c.httpClient.Do(req)
+}
+
+// responseError는 외부 DAV 서버가 반환한 상태 코드와 오류 본문을 함께 보존한다.
+// Google CalDAV는 403 응답 본문에 scope/권한 관련 원인을 포함할 수 있다.
+func responseError(prefix string, resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	detail := strings.TrimSpace(string(body))
+	if detail == "" {
+		return fmt.Errorf("%s: HTTP %d", prefix, resp.StatusCode)
+	}
+	return fmt.Errorf("%s: HTTP %d: %s", prefix, resp.StatusCode, detail)
 }
 
 // setAuth는 Basic 인증 헤더를 설정한다.
 func (c *Client) setAuth(req *http.Request) {
+	if c.authType == account.AuthOAuth2 {
+		return
+	}
 	req.SetBasicAuth(c.username, c.password)
 }
 
@@ -356,42 +512,4 @@ func (c *Client) resolveURL(href string) string {
 		return c.url[:idx+3+slash] + href
 	}
 	return c.url + "/" + href
-}
-
-// extractTag는 XML 조각에서 첫 번째 <tag>...</tag>(또는 <ns:tag> 같이
-// 네임스페이스 접두사가 붙은 형태)의 내용을 반환한다.
-// 속성이 있는 열린 태그(<tag foo="bar">)도 처리한다.
-func extractTag(data []byte, tag []byte) string {
-	local := string(tag)
-	open := "<" + local
-	closeTag := "</" + local
-
-	start := bytes.Index(data, []byte(open))
-	if start < 0 {
-		return ""
-	}
-	gt := bytes.IndexByte(data[start:], '>')
-	if gt < 0 {
-		return ""
-	}
-	contentStart := start + gt + 1
-	end := bytes.Index(data[contentStart:], []byte(closeTag))
-	if end < 0 {
-		return ""
-	}
-	return string(data[contentStart : contentStart+end])
-}
-
-// textOf는 XML 조각에서 <tag>...</tag>의 텍스트 내용을 반환한다.
-func textOf(data []byte, tag []byte) string {
-	return strings.TrimSpace(extractTag(data, tag))
-}
-
-// splitAll는 data를 sep 기준으로 분할한다(sep 자체는 제거).
-func splitAll(data, sep []byte) [][]byte {
-	parts := bytes.Split(data, sep)
-	if len(parts) <= 1 {
-		return nil
-	}
-	return parts[1:]
 }

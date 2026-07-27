@@ -28,12 +28,12 @@ export interface Provider {
     "caldavUrl": string;
 
     /**
-     * HelpURL은 앱 비밀번호/2단계 인증 설정 도움말 URL.
+     * HelpURL은 제공자 인증 설정 도움말 URL.
      */
     "helpUrl"?: string;
 
     /**
-     * Note는 사용자 안내 문구(예: "앱 비밀번호가 필요합니다").
+     * Note는 사용자 안내 문구.
      */
     "note"?: string;
 }

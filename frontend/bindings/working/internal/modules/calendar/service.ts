@@ -84,9 +84,9 @@ export function EventDelete(calendarID: string, uid: string): $CancellablePromis
 }
 
 /**
- * EventList는 접근 가능한 모든 일정을 반환한다.
- * 로컬 계정의 일정은 저장소에서 조회하고,
- * CalDAV 계정의 일정은 서버에서 조회해 합친다.
+ * EventList는 SQLite에 캐시된 접근 가능한 모든 일정을 반환한다.
+ * 외부 서버 호출은 SyncNow에서만 수행한다. 화면 진입/월 이동은
+ * 네트워크를 사용하지 않고 마지막 동기화 스냅샷을 보여준다.
  * from/to가 빈 문자열이면 전체 범위를 조회한다.
  */
 export function EventList($from: string, to: string): $CancellablePromise<types$0.Event[] | null> {
@@ -107,6 +107,15 @@ export function EventUpdate(ev: types$0.Event | null): $CancellablePromise<types
  */
 export function EventsByAccount(accID: string): $CancellablePromise<types$0.Event[] | null> {
     return $Call.ByID(760386085, accID);
+}
+
+/**
+ * GoogleOAuthConnect는 Google OAuth 인증을 완료한 뒤 캘린더 계정을 저장한다.
+ * 인증 화면은 기본 브라우저에서 열고, authorization code 수신과 토큰 교환은
+ * 로컬 callback 서버를 통해 Go에서 수행한다.
+ */
+export function GoogleOAuthConnect(acc: account$0.Account | null): $CancellablePromise<string> {
+    return $Call.ByID(2793874006, acc);
 }
 
 /**

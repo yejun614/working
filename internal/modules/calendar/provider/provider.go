@@ -21,10 +21,10 @@ type Provider struct {
 	// CalDAVURL은 CalDAV 서버 캘린더 홈 URL.
 	CalDAVURL string `json:"caldavUrl"`
 
-	// HelpURL은 앱 비밀번호/2단계 인증 설정 도움말 URL.
+	// HelpURL은 제공자 인증 설정 도움말 URL.
 	HelpURL string `json:"helpUrl,omitempty"`
 
-	// Note는 사용자 안내 문구(예: "앱 비밀번호가 필요합니다").
+	// Note는 사용자 안내 문구.
 	Note string `json:"note,omitempty"`
 }
 
@@ -35,8 +35,8 @@ var providers = []Provider{
 		Name:      "Google Calendar",
 		Domains:   []string{"gmail.com", "googlemail.com"},
 		CalDAVURL: "https://apidata.googleusercontent.com/caldav/v2",
-		HelpURL:   "https://support.google.com/accounts/answer/185833",
-		Note:      "구글 계정 2단계 인증 후 앱 비밀번호가 필요합니다.",
+		HelpURL:   "https://developers.google.com/identity/protocols/oauth2",
+		Note:      "Google OAuth 인증으로 연결합니다. 비밀번호를 입력하지 마세요.",
 	},
 	{
 		ID:        "apple",

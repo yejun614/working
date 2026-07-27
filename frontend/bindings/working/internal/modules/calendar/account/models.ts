@@ -65,12 +65,12 @@ export enum AuthType {
     $zero = "",
 
     /**
-     * AuthBasic은 사용자 이름 + 비밀번호(또는 앱 비밀번호) 기반 인증.
+     * AuthBasic은 사용자 이름 + 비밀번호 기반 인증.
      */
     AuthBasic = "basic",
 
     /**
-     * AuthOAuth2는 OAuth2 토큰 기반 인증(현재 첫 버전에서는 미지원 자리표시).
+     * AuthOAuth2는 OAuth2 access/refresh token 기반 인증.
      */
     AuthOAuth2 = "oauth2",
 };

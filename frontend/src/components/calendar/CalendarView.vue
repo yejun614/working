@@ -1,17 +1,24 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import TuiCalendar from '@toast-ui/calendar'
+import '@toast-ui/calendar/dist/toastui-calendar.min.css'
 import { Service as CalendarService } from '../../../bindings/working/internal/modules/calendar'
 import type { Account } from '../../../bindings/working/internal/modules/calendar/account/models'
-import type { Event } from '../../../bindings/working/internal/modules/calendar/types/models'
+import type { Event, CalendarInfo } from '../../../bindings/working/internal/modules/calendar/types/models'
 import CalendarAccountForm from './CalendarAccountForm.vue'
 import EventForm from './EventForm.vue'
 
 const accounts = ref<Account[]>([])
+type DisplayCalendar = CalendarInfo & { accountId: string; displayColor: string }
+const calendarsByAccount = ref<Record<string, DisplayCalendar[]>>({})
+const calendarVisibility = ref<Record<string, boolean>>({})
 const events = ref<Event[]>([])
 const selectedAccountId = ref<string>('')
 const loading = ref(false)
 const error = ref('')
 const info = ref('')
+const copyStatus = ref('')
+let copyStatusTimer: ReturnType<typeof setTimeout> | undefined
 
 const showAccountForm = ref(false)
 const editingAccount = ref<Account | null>(null)
@@ -25,12 +32,156 @@ const viewMonth = ref(new Date().getMonth()) // 0-based
 const selectedDate = ref<string>(todayStr())
 
 const selectedEvent = ref<Event | null>(null)
+const tuiCalendarElement = ref<HTMLElement | null>(null)
+let tuiCalendar: TuiCalendar | null = null
+let immediateSelectedCell: Element | null = null
+// 앱 시작 시 캐시가 비어 있을 때만 원격 캘린더 자동 새로고침을 한 번 수행한다.
+const startupAutoRefreshKey = 'app-startup-auto-refresh:calendar'
+let startupAutoRefreshAttempted = sessionStorage.getItem(startupAutoRefreshKey) === '1'
 
 const monthLabel = computed(() => `${viewYear.value}년 ${viewMonth.value + 1}월`)
 
 const selectedAccount = computed(() =>
   accounts.value.find(a => a.id === selectedAccountId.value) || null
 )
+
+function tuiCalendarId(calendar: DisplayCalendar): string {
+  return calendarKey(calendar.accountId, { href: calendar.href })
+}
+
+function allDisplayCalendars(): DisplayCalendar[] {
+  return Object.values(calendarsByAccount.value).flat()
+}
+
+function syncTuiDate() {
+  if (!tuiCalendar) return
+  const date = tuiCalendar.getDate().toDate()
+  viewYear.value = date.getFullYear()
+  viewMonth.value = date.getMonth()
+  selectedDate.value = dateStr(date)
+}
+
+// Toast UI Calendar는 클릭 선택을 누적할 수 있으므로 새 셀을 선택하기 전에 이전 선택을 지운다.
+function clearTuiGridSelections() {
+  tuiCalendar?.clearGridSelections()
+}
+
+// Toast UI Calendar는 날짜를 mouseup 때 확정하므로, mousedown 단계에서 상세 날짜를 먼저 바꾼다.
+// 월 그리드의 셀 순서는 getDateRangeStart()부터 이어지는 날짜 순서와 동일하다.
+function selectTuiDateOnMouseDown(mouseEvent: MouseEvent) {
+  clearTuiGridSelections()
+  if (!tuiCalendar || !tuiCalendarElement.value) return
+
+  const target = mouseEvent.target as Element | null
+  const cell = target?.closest('.daygrid-cell')
+  if (!cell) return
+
+  const cells = Array.from(tuiCalendarElement.value.querySelectorAll('.daygrid-cell'))
+  const cellIndex = cells.indexOf(cell)
+  if (cellIndex < 0) return
+
+  immediateSelectedCell?.classList.remove('hermes-immediate-selected')
+  immediateSelectedCell = cell
+  cell.classList.add('hermes-immediate-selected')
+
+  const date = tuiCalendar.getDateRangeStart().toDate()
+  date.setDate(date.getDate() + cellIndex)
+  selectCalendarDate(date)
+}
+
+function allDayEndForTui(startValue: string, endValue: string): string {
+  // iCalendar의 종일 DTEND는 종료일 미포함이지만 Toast UI Calendar는 포함하므로 하루를 뺀다.
+  const start = startValue.slice(0, 10)
+  const end = endValue.slice(0, 10) > start ? endValue.slice(0, 10) : start
+  const [year, month, day] = end.split('-').map(Number)
+  const tuiEnd = new Date(Date.UTC(year, month - 1, day - 1))
+  return tuiEnd.toISOString().slice(0, 10) < start ? start : tuiEnd.toISOString().slice(0, 10)
+}
+
+function renderTuiCalendar() {
+  if (!tuiCalendar) return
+
+  const displayCalendars = allDisplayCalendars()
+  tuiCalendar.setCalendars(displayCalendars.map(calendar => ({
+    id: tuiCalendarId(calendar),
+    name: calendar.name || '이름 없는 캘린더',
+    color: '#ffffff',
+    backgroundColor: calendar.displayColor,
+    dragBackgroundColor: calendar.displayColor,
+    borderColor: calendar.displayColor,
+  })))
+  tuiCalendar.clear()
+
+  const tuiEvents = events.value.map(event => {
+    const calendar = displayCalendars.find(candidate =>
+      candidate.accountId === event.calendarId && candidate.href === event.calendarHref
+    )
+    const calendarId = calendar ? tuiCalendarId(calendar) : event.calendarId
+    return {
+      id: `${calendarId}:${event.uid}`,
+      calendarId,
+      title: event.title,
+      body: event.description || '',
+      location: event.location || '',
+      start: event.allDay ? event.start.slice(0, 10) : event.start,
+      end: event.allDay ? allDayEndForTui(event.start, event.end) : event.end,
+      category: event.allDay ? 'allday' as const : 'time' as const,
+      isAllday: !!event.allDay,
+      isReadOnly: true,
+      isVisible: isCalendarVisible(event.calendarId, event.calendarHref),
+      raw: event,
+    }
+  })
+  tuiCalendar.createEvents(tuiEvents)
+  tuiCalendar.render()
+}
+
+function initializeTuiCalendar() {
+  if (!tuiCalendarElement.value) return
+  tuiCalendar = new TuiCalendar(tuiCalendarElement.value, {
+    defaultView: 'month',
+    // 전역 읽기 전용에서는 빈 날짜 셀의 gridSelection도 비활성화되므로,
+    // 일정 객체별로 읽기 전용을 적용하고 날짜 선택만 허용한다.
+    isReadOnly: false,
+    usageStatistics: false,
+    useFormPopup: false,
+    useDetailPopup: false,
+    gridSelection: { enableClick: true, enableDblClick: false },
+    month: { isAlways6Weeks: true, visibleEventCount: 4 },
+    theme: {
+      common: {
+        backgroundColor: 'var(--panel)',
+        border: '1px solid var(--border)',
+        dayName: { color: 'var(--muted)' },
+        holiday: { color: 'var(--danger)' },
+        saturday: { color: 'var(--accent)' },
+        today: { color: 'var(--accent)' },
+      },
+      month: {
+        dayExceptThisMonth: { color: 'var(--muted)' },
+        dayName: { borderLeft: '1px solid var(--border)', backgroundColor: 'var(--panel-2)' },
+        weekend: { backgroundColor: 'var(--panel-2)' },
+      },
+    },
+  })
+  tuiCalendar.on('selectDateTime', ({ start }) => {
+    selectCalendarDate(start)
+  })
+  tuiCalendar.on('clickEvent', ({ event }) => {
+    const original = event.raw as Event | undefined
+    if (!original) return
+    selectedEvent.value = original
+    selectedDate.value = dateStr(new Date(original.start))
+  })
+  renderTuiCalendar()
+}
+
+// Toast UI Calendar의 날짜 선택과 상세 패널이 같은 날짜 상태를 공유하도록 한다.
+// 선택한 날짜에 일정이 없어도 기존 일정 상세가 남지 않도록 선택 이벤트도 초기화한다.
+function selectCalendarDate(date: Date) {
+  selectedDate.value = dateStr(date)
+  selectedEvent.value = null
+}
 
 // 월 캘린더 그리드: 일~토 6주 체웅
 const calendarCells = computed(() => {
@@ -70,11 +221,26 @@ const selectedDayEvents = computed(() => {
 function eventsForDate(dt: Date): Event[] {
   const ds = dateStr(dt)
   return events.value.filter(e => {
+    if (!isCalendarVisible(e.calendarId, e.calendarHref)) return false
+
+    // 종일 일정의 DTSTART/DTEND는 시간대가 없는 날짜 값이다.
+    // 이를 Date로 변환해 시간 구간을 비교하면 UTC 자정이 로컬 시간으로
+    // 이동하면서 전날 일정이 다음 날 상세 패널에 섞일 수 있다.
+    // 따라서 종일 일정은 종료일 미포함의 날짜 구간으로만 비교한다.
+    if (e.allDay) {
+      const startDate = e.start.slice(0, 10)
+      const endDate = e.end.slice(0, 10)
+      if (!endDate || endDate <= startDate) return ds === startDate
+      return startDate <= ds && ds < endDate
+    }
+
     const eStart = new Date(e.start)
     const eEnd = new Date(e.end)
     const dayStart = new Date(ds + 'T00:00:00')
-    const dayEnd = new Date(ds + 'T23:59:59')
-    return eStart <= dayEnd && eEnd >= dayStart
+    const nextDayStart = new Date(dayStart)
+    nextDayStart.setDate(nextDayStart.getDate() + 1)
+    // 종료 시각은 미포함으로 비교한다.
+    return eStart < nextDayStart && eEnd > dayStart
   })
 }
 
@@ -90,6 +256,11 @@ function todayStr(): string {
 }
 
 function prevMonth() {
+  if (tuiCalendar) {
+    tuiCalendar.prev()
+    syncTuiDate()
+    return
+  }
   if (viewMonth.value === 0) {
     viewMonth.value = 11
     viewYear.value--
@@ -99,6 +270,11 @@ function prevMonth() {
 }
 
 function nextMonth() {
+  if (tuiCalendar) {
+    tuiCalendar.next()
+    syncTuiDate()
+    return
+  }
   if (viewMonth.value === 11) {
     viewMonth.value = 0
     viewYear.value++
@@ -108,6 +284,11 @@ function nextMonth() {
 }
 
 function goToday() {
+  if (tuiCalendar) {
+    tuiCalendar.today()
+    syncTuiDate()
+    return
+  }
   const now = new Date()
   viewYear.value = now.getFullYear()
   viewMonth.value = now.getMonth()
@@ -115,8 +296,7 @@ function goToday() {
 }
 
 function selectDate(date: string) {
-  selectedDate.value = date
-  selectedEvent.value = null
+  selectCalendarDate(new Date(`${date}T00:00:00`))
 }
 
 function accountColor(accId: string): string {
@@ -124,16 +304,92 @@ function accountColor(accId: string): string {
   return acc?.color || '#4f7cff'
 }
 
+const calendarPalette = ['#4f7cff', '#a855f7', '#14b8a6', '#f97316', '#ef476f', '#eab308', '#06b6d4', '#84cc16']
+
+function calendarColor(event: Event): string {
+  if (event.calendarHref) {
+    const calendars = calendarsByAccount.value[event.calendarId] || []
+    const calendar = calendars.find(c => c.href === event.calendarHref)
+    if (calendar) return calendar.displayColor
+  }
+  return accountColor(event.calendarId)
+}
+
+function fallbackCalendar(acc: Account): DisplayCalendar {
+  return {
+    accountId: acc.id,
+    name: acc.name,
+    color: acc.color,
+    displayColor: acc.color || calendarPalette[0],
+  }
+}
+
+function calendarKey(accountId: string, calendar?: Partial<Pick<CalendarInfo, 'href' | 'name'>>): string {
+  return `${accountId}:${calendar?.href || calendar?.name || 'default'}`
+}
+
+function restoreCalendarVisibility(accountId: string, calendar: CalendarInfo): boolean {
+  const key = calendarKey(accountId, { href: calendar.href })
+  const saved = localStorage.getItem(`calendar-visible:${key}`)
+  const visible = saved === null ? true : saved === 'true'
+  calendarVisibility.value[key] = visible
+  return visible
+}
+
+function isCalendarVisible(accountId: string, href?: string): boolean {
+  return calendarVisibility.value[calendarKey(accountId, { href })] !== false
+}
+
+function toggleCalendar(calendar: DisplayCalendar) {
+  const key = calendarKey(calendar.accountId, { href: calendar.href })
+  const visible = calendarVisibility.value[key] === false
+  calendarVisibility.value[key] = visible
+  localStorage.setItem(`calendar-visible:${key}`, String(visible))
+  renderTuiCalendar()
+}
+
 async function refreshAccounts() {
   try {
     const list = await CalendarService.AccountList()
     accounts.value = list || []
+    const nextCalendars: Record<string, DisplayCalendar[]> = {}
+    let paletteOffset = 0
+    await Promise.all(accounts.value.map(async (acc) => {
+      try {
+        const list = await CalendarService.Calendars(acc.id)
+        const calendars = (list || []).map((calendar, index) => ({
+          ...calendar,
+          accountId: acc.id,
+          displayColor: calendar.color || calendarPalette[(paletteOffset + index) % calendarPalette.length],
+        }))
+        paletteOffset += Math.max(calendars.length, 1)
+        nextCalendars[acc.id] = calendars.length > 0 ? calendars : [fallbackCalendar(acc)]
+        nextCalendars[acc.id].forEach(calendar => restoreCalendarVisibility(acc.id, calendar))
+      } catch {
+        nextCalendars[acc.id] = [fallbackCalendar(acc)]
+        restoreCalendarVisibility(acc.id, nextCalendars[acc.id][0])
+      }
+    }))
+    calendarsByAccount.value = nextCalendars
     if (!selectedAccountId.value && accounts.value.length > 0) {
       selectedAccountId.value = accounts.value[0].id
     }
   } catch (e) {
     setError((e as Error).message)
   }
+}
+
+async function autoRefreshEmptyCacheOnce() {
+  if (startupAutoRefreshAttempted || events.value.length > 0) return
+  startupAutoRefreshAttempted = true
+  sessionStorage.setItem(startupAutoRefreshKey, '1')
+
+  const remoteAccounts = accounts.value.filter(acc => acc.source === 'caldav')
+  if (remoteAccounts.length === 0) return
+
+  // 계정별로 한 번씩만 동기화한 뒤 캐시를 다시 읽는다.
+  await Promise.all(remoteAccounts.map(acc => CalendarService.SyncNow(acc.id)))
+  await loadEvents()
 }
 
 async function loadEvents() {
@@ -145,6 +401,8 @@ async function loadEvents() {
     const to = new Date(viewYear.value, viewMonth.value + 2, 0)
     const list = await CalendarService.EventList(from.toISOString(), to.toISOString())
     events.value = list || []
+    renderTuiCalendar()
+    await autoRefreshEmptyCacheOnce()
   } catch (e) {
     setError((e as Error).message)
   } finally {
@@ -181,7 +439,10 @@ async function deleteAccount(acc: Account) {
 async function onAccountSaved() {
   showAccountForm.value = false
   await refreshAccounts()
-  setInfo('계정이 저장되었습니다.')
+  await loadEvents()
+  if (!error.value) {
+    setInfo('계정이 저장되었습니다.')
+  }
 }
 
 function openNewEvent(date?: string) {
@@ -226,11 +487,40 @@ async function syncAccount(acc: Account) {
 function setError(msg: string) {
   error.value = msg
   info.value = ''
+  copyStatus.value = ''
 }
 function setInfo(msg: string) {
   info.value = msg
   error.value = ''
+  copyStatus.value = ''
   setTimeout(() => { if (info.value === msg) info.value = '' }, 3500)
+}
+
+async function copyError() {
+  if (!error.value) return
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(error.value)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = error.value
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const copied = document.execCommand('copy')
+      textarea.remove()
+      if (!copied) throw new Error('copy command failed')
+    }
+
+    copyStatus.value = '복사됨'
+    if (copyStatusTimer) clearTimeout(copyStatusTimer)
+    copyStatusTimer = setTimeout(() => { copyStatus.value = '' }, 2500)
+  } catch {
+    copyStatus.value = '복사 실패'
+  }
 }
 
 function formatTime(s: string): string {
@@ -249,8 +539,14 @@ function formatDate(s: string): string {
 const weekDays = ['일', '월', '화', '수', '목', '금', '토']
 
 onMounted(async () => {
+  initializeTuiCalendar()
   await refreshAccounts()
   await loadEvents()
+})
+
+onBeforeUnmount(() => {
+  tuiCalendar?.destroy()
+  tuiCalendar = null
 })
 </script>
 
@@ -258,8 +554,7 @@ onMounted(async () => {
   <div class="layout">
     <aside class="sidebar">
       <div class="sidebar-header">
-        <h1>working</h1>
-        <span class="module-tag">캘린더 모듈</span>
+        <h1>캘린더</h1>
       </div>
 
       <div class="account-section">
@@ -287,6 +582,19 @@ onMounted(async () => {
               <span class="badge">{{ a.source === 'caldav' ? 'CalDAV' : '로컬' }}</span>
               <span v-if="a.lastSyncAt" class="last-sync">{{ formatDate(a.lastSyncAt) }}</span>
             </div>
+            <ul v-if="calendarsByAccount[a.id]?.length" class="calendar-list">
+              <li v-for="calendar in calendarsByAccount[a.id]" :key="calendar.href || calendar.name" class="calendar-item">
+                <span class="calendar-color-dot" :style="{ background: calendar.displayColor }"></span>
+                <span class="calendar-name">{{ calendar.name || '이름 없는 캘린더' }}</span>
+                <label class="calendar-toggle" :title="isCalendarVisible(calendar.accountId, calendar.href) ? '캘린더 숨기기' : '캘린더 표시하기'" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="isCalendarVisible(calendar.accountId, calendar.href)"
+                    @change="toggleCalendar(calendar)"
+                  />
+                </label>
+              </li>
+            </ul>
           </li>
           <li v-if="accounts.length === 0" class="empty">등록된 캘린더가 없습니다</li>
         </ul>
@@ -294,7 +602,11 @@ onMounted(async () => {
     </aside>
 
     <section class="calendar-pane">
-      <div v-if="error" class="alert error">{{ error }}</div>
+      <div v-if="error" class="alert error">
+        <span class="alert-message">{{ error }}</span>
+        <button class="btn sm alert-copy" type="button" @click="copyError">오류 복사</button>
+        <span v-if="copyStatus" class="copy-status" role="status">{{ copyStatus }}</span>
+      </div>
       <div v-if="info" class="alert info">{{ info }}</div>
 
       <div class="cal-header">
@@ -310,36 +622,11 @@ onMounted(async () => {
         </div>
       </div>
 
-      <div class="week-header">
-        <div v-for="w in weekDays" :key="w" class="week-cell">{{ w }}</div>
-      </div>
-
-      <div class="cal-grid">
-        <div
-          v-for="cell in calendarCells"
-          :key="cell.date"
-          class="cal-cell"
-          :class="{ 'other-month': !cell.current, today: cell.date === todayStr(), selected: cell.date === selectedDate }"
-          @click="selectDate(cell.date)"
-          @dblclick="openNewEvent(cell.date)"
-        >
-          <div class="cell-date">{{ cell.day }}</div>
-          <div class="cell-events">
-            <div
-              v-for="e in cell.events.slice(0, 3)"
-              :key="e.uid"
-              class="cell-event"
-              :style="{ borderLeftColor: accountColor(e.calendarId) }"
-              :title="e.title"
-              @click.stop="selectedEvent = e"
-            >
-              <span class="ev-time">{{ e.allDay ? '종일' : formatTime(e.start) }}</span>
-              <span class="ev-title">{{ e.title }}</span>
-            </div>
-            <div v-if="cell.events.length > 3" class="more">+{{ cell.events.length - 3 }} 더보기</div>
-          </div>
-        </div>
-      </div>
+      <div
+        ref="tuiCalendarElement"
+        class="tui-calendar-host"
+        @mousedown.capture="selectTuiDateOnMouseDown"
+      ></div>
     </section>
 
     <section class="detail-pane">
@@ -348,7 +635,7 @@ onMounted(async () => {
         <button class="btn primary sm" @click="openNewEvent(selectedDate)">+ 일정</button>
       </div>
 
-      <div class="detail-body">
+      <div :key="selectedDate" class="detail-body">
         <div v-if="selectedDayEvents.length === 0" class="state">이 날의 일정이 없습니다</div>
         <ul v-else class="day-event-list">
           <li
@@ -358,15 +645,18 @@ onMounted(async () => {
             @click="selectedEvent = e"
           >
             <span class="time-col">{{ e.allDay ? '종일' : formatTime(e.start) }}</span>
-            <span class="color-bar" :style="{ background: accountColor(e.calendarId) }"></span>
+            <span class="color-bar" :style="{ background: calendarColor(e) }"></span>
             <span class="ev-title">{{ e.title }}</span>
           </li>
         </ul>
 
         <div v-if="selectedEvent" class="event-detail">
           <div class="detail-actions">
-            <button class="btn sm" @click="openEditEvent(selectedEvent)">편집</button>
-            <button class="btn sm danger" @click="deleteEvent(selectedEvent)">삭제</button>
+            <template v-if="!selectedEvent.uid.startsWith('kanban:')">
+              <button class="btn sm" @click="openEditEvent(selectedEvent)">편집</button>
+              <button class="btn sm danger" @click="deleteEvent(selectedEvent)">삭제</button>
+            </template>
+            <span v-else class="kanban-event-note">칸반 카드에서 관리</span>
           </div>
           <h3>{{ selectedEvent.title }}</h3>
           <div class="meta"><span>시작:</span> {{ new Date(selectedEvent.start).toLocaleString() }}</div>
@@ -403,14 +693,17 @@ onMounted(async () => {
 <style scoped>
 .layout {
   display: grid;
-  grid-template-columns: 220px 1fr 300px;
-  height: 100vh;
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr) minmax(0, 300px);
+  width: 100%;
+  min-width: 0;
+  height: 100%;
 }
 .sidebar {
   background: var(--panel);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  min-width: 0;
   overflow: auto;
 }
 .sidebar-header {
@@ -418,7 +711,6 @@ onMounted(async () => {
   border-bottom: 1px solid var(--border);
 }
 .sidebar-header h1 { margin: 0; font-size: 18px; letter-spacing: 0.5px; }
-.module-tag { font-size: 11px; color: var(--muted); }
 .section-title {
   display: flex; justify-content: space-between; align-items: center;
   padding: 12px 16px 6px;
@@ -443,6 +735,13 @@ onMounted(async () => {
 .account-actions { display: none; gap: 4px; }
 .account-list li:hover .account-actions { display: flex; }
 .account-sub { font-size: 11px; color: var(--muted); margin-top: 4px; padding-left: 18px; display: flex; gap: 8px; }
+.calendar-list { list-style: none; margin: 7px 0 0 18px; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.calendar-item { display: flex; align-items: center; gap: 7px; padding: 0 !important; color: var(--muted); font-size: 11px; cursor: default !important; }
+.calendar-item:hover { background: transparent !important; }
+.calendar-color-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.calendar-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.calendar-toggle { display: flex; align-items: center; cursor: pointer; }
+.calendar-toggle input { accent-color: var(--accent); width: 13px; height: 13px; margin: 0; }
 .badge {
   background: var(--border);
   padding: 1px 6px;
@@ -467,6 +766,7 @@ onMounted(async () => {
 .calendar-pane {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   overflow: hidden;
   border-right: 1px solid var(--border);
 }
@@ -498,8 +798,33 @@ onMounted(async () => {
   border-radius: 6px;
   font-size: 13px;
 }
-.alert.error { background: rgba(255,90,106,0.12); color: var(--danger); }
+.alert.error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: rgba(255,90,106,0.12);
+  color: var(--danger);
+}
+.alert-message {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.alert-copy { flex-shrink: 0; }
+.copy-status { flex-shrink: 0; font-size: 11px; opacity: 0.85; }
 .alert.info { background: rgba(56,211,159,0.12); color: var(--ok); }
+
+.tui-calendar-host {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--panel);
+}
+.tui-calendar-host :deep(.toastui-calendar-layout) { border-color: var(--border); }
+.tui-calendar-host :deep(.hermes-immediate-selected) {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
 
 .week-header {
   display: grid;
@@ -558,6 +883,7 @@ onMounted(async () => {
 .detail-pane {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   overflow: hidden;
 }
 .detail-header {

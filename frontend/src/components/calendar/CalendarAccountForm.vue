@@ -28,6 +28,10 @@ const providers = ref<Provider[]>([])
 const selectedProviderId = ref<string>('')
 const detectedProvider = ref<Provider | null>(null)
 
+const isGoogle = computed(() =>
+  selectedProviderId.value === 'google' || caldavUrl.value.includes('apidata.googleusercontent.com/caldav/v2'),
+)
+
 async function loadProviders() {
   try {
     const list = await CalendarService.ProviderList()
@@ -89,7 +93,7 @@ async function save() {
     color: color.value,
     caldavUrl: source.value === 'caldav' ? caldavUrl.value.trim() : '',
     username: source.value === 'caldav' ? username.value.trim() : '',
-    authType: AuthType.AuthBasic,
+    authType: props.account?.authType || (isGoogle.value ? AuthType.AuthOAuth2 : AuthType.AuthBasic),
     syncEnabled: source.value === 'caldav' ? syncEnabled.value : false,
   }
 
@@ -107,10 +111,37 @@ async function save() {
     saving.value = false
   }
 }
+
+async function connectGoogle() {
+  error.value = ''
+  if (!name.value.trim()) { error.value = '계정 이름은 필수입니다'; return }
+  if (!username.value.trim()) { error.value = 'Google 계정 이메일은 필수입니다'; return }
+
+  const acc: Account = {
+    id: props.account?.id || '',
+    name: name.value.trim(),
+    source: 'caldav' as Source,
+    color: color.value,
+    caldavUrl: caldavUrl.value.trim(),
+    username: username.value.trim(),
+    authType: AuthType.AuthOAuth2,
+    syncEnabled: syncEnabled.value,
+  }
+
+  saving.value = true
+  try {
+    await CalendarService.GoogleOAuthConnect(acc)
+    emit('saved')
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    saving.value = false
+  }
+}
 </script>
 
 <template>
-  <div class="modal-backdrop" @click.self="emit('close')">
+  <div class="modal-backdrop">
     <div class="modal">
       <header class="modal-header">
         <h2>{{ isEdit ? '캘린더 계정 편집' : '캘린더 계정 추가' }}</h2>
@@ -163,9 +194,12 @@ async function save() {
               <span>사용자 이름 *</span>
               <input v-model="username" placeholder="user@example.com" />
             </div>
-            <div class="field">
+            <div v-if="!isGoogle" class="field">
               <span>{{ isEdit ? '비밀번호/토큰 (변경 시)' : '비밀번호/토큰 *' }}</span>
               <input v-model="credential" type="password" autocomplete="new-password" />
+            </div>
+            <div v-else class="oauth-note">
+              Google 계정은 비밀번호 대신 Google OAuth 인증을 사용합니다.
             </div>
             <div class="field checkbox-field">
               <label class="checkbox">
@@ -179,7 +213,8 @@ async function save() {
 
       <footer class="modal-footer">
         <button class="btn" @click="emit('close')">취소</button>
-        <button class="btn primary" :disabled="saving" @click="save">{{ saving ? '저장 중…' : '저장' }}</button>
+        <button v-if="isGoogle && !isEdit" class="btn primary" :disabled="saving" @click="connectGoogle">{{ saving ? 'Google 인증 중…' : 'Google로 연결' }}</button>
+        <button v-else class="btn primary" :disabled="saving" @click="save">{{ saving ? '저장 중…' : '저장' }}</button>
       </footer>
     </div>
   </div>
@@ -273,6 +308,15 @@ h3 {
   font-size: 13px;
 }
 .alert.error { background: rgba(255,90,106,0.12); color: var(--danger); }
+.oauth-note {
+  align-self: end;
+  grid-column: span 2;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(79,124,255,0.10);
+  color: var(--muted);
+  font-size: 12px;
+}
 
 .provider-row {
   display: flex;

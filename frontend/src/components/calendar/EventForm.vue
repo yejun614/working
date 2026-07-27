@@ -61,7 +61,10 @@ function extractTime(dt?: string): string {
 
 function toRFC3339(date: string, time: string, endOfDay = false): string {
   if (allDay.value) {
-    return new Date(date + 'T00:00:00').toISOString()
+    const value = new Date(date + 'T00:00:00')
+    // iCalendar 종일 일정의 DTEND는 종료일 미포함이므로 하루를 더해 저장한다.
+    if (endOfDay) value.setDate(value.getDate() + 1)
+    return value.toISOString()
   }
   if (endOfDay && time === '23:59') {
     return new Date(date + 'T23:59:59').toISOString()
@@ -107,7 +110,7 @@ async function save() {
 </script>
 
 <template>
-  <div class="modal-backdrop" @click.self="emit('close')">
+  <div class="modal-backdrop">
     <div class="modal">
       <header class="modal-header">
         <h2>{{ isEdit ? '일정 편집' : '일정 추가' }}</h2>

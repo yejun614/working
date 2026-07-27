@@ -19,6 +19,7 @@ import (
 	"working/internal/modules/calendar/provider"
 	"working/internal/modules/calendar/store"
 	"working/internal/modules/calendar/types"
+	kanbanstore "working/internal/modules/kanban/store"
 )
 
 // Service는 프론트엔드에 바인딩되는 캘린더 모듈 서비스이다.
@@ -53,6 +54,18 @@ func (s *Service) ProviderList() []provider.Provider {
 // 프론트엔드에서 사용자 이름 입력 중 CalDAV URL 자동 채우기에 사용한다.
 func (s *Service) ProviderLookupByEmail(email string) *provider.Provider {
 	return provider.LookupByEmail(email)
+}
+
+// newCalDAVClient는 계정 자격증명을 키체인에서 읽어 CalDAV 클라이언트를 만든다.
+// OAuth access token이 갱신되면 동일 계정의 키체인 credential도 갱신한다.
+func (s *Service) newCalDAVClient(acc *account.Account) (*caldav.Client, error) {
+	credential, err := s.store.Credential(acc.ID)
+	if err != nil {
+		return nil, err
+	}
+	return caldav.NewClient(acc, credential, func(updated string) error {
+		return s.store.SaveAccount(acc, updated)
+	})
 }
 
 // AccountList는 등록된 모든 캘린더 계정을 반환한다(자격증명 제외).
@@ -130,9 +143,9 @@ func (s *Service) AccountDelete(id string) error {
 	return s.store.DeleteAccount(id)
 }
 
-// EventList는 접근 가능한 모든 일정을 반환한다.
-// 로컬 계정의 일정은 저장소에서 조회하고,
-// CalDAV 계정의 일정은 서버에서 조회해 합친다.
+// EventList는 SQLite에 캐시된 접근 가능한 모든 일정을 반환한다.
+// 외부 서버 호출은 SyncNow에서만 수행한다. 화면 진입/월 이동은
+// 네트워크를 사용하지 않고 마지막 동기화 스냅샷을 보여준다.
 // from/to가 빈 문자열이면 전체 범위를 조회한다.
 func (s *Service) EventList(from, to string) ([]types.Event, error) {
 	accs, err := s.store.ListAccounts()
@@ -140,6 +153,7 @@ func (s *Service) EventList(from, to string) ([]types.Event, error) {
 		return nil, err
 	}
 	var all []types.Event
+	var firstCalDAVError error
 
 	for _, acc := range accs {
 		if acc.Source == account.SourceLocal {
@@ -149,13 +163,23 @@ func (s *Service) EventList(from, to string) ([]types.Event, error) {
 			}
 			all = append(all, events...)
 		} else if acc.Source == account.SourceCalDAV && acc.SyncEnabled {
-			events, err := s.caldavEvents(&acc)
+			// CalDAV는 새로고침 버튼의 SyncNow가 갱신한 SQLite 캐시만 읽는다.
+			events, err := s.store.EventsByCalendar(acc.ID)
 			if err != nil {
-				// CalDAV 서버 오류는 계속 진행(부분 실패 허용).
+				if firstCalDAVError == nil {
+					firstCalDAVError = fmt.Errorf("캐시 조회 실패: %w", err)
+				}
 				continue
 			}
 			all = append(all, events...)
 		}
+	}
+	if len(all) == 0 && firstCalDAVError != nil {
+		return nil, firstCalDAVError
+	}
+	// 칸반 카드 마감일을 기존 캘린더에서 읽기 전용 종일 일정으로 표시한다.
+	if kanbanEvents, err := kanbanDueEvents(); err == nil {
+		all = append(all, kanbanEvents...)
 	}
 	if from != "" {
 		all = filterFrom(all, from)
@@ -166,6 +190,34 @@ func (s *Service) EventList(from, to string) ([]types.Event, error) {
 	return all, nil
 }
 
+func kanbanDueEvents() ([]types.Event, error) {
+	st, err := kanbanstore.New()
+	if err != nil {
+		return nil, err
+	}
+	d, err := st.Load()
+	if err != nil {
+		return nil, err
+	}
+	var events []types.Event
+	for _, card := range d.Cards {
+		if card.Archived || card.DueDate == "" {
+			continue
+		}
+		start := card.DueDate + "T00:00:00Z"
+		endDate, err := time.Parse("2006-01-02", card.DueDate)
+		if err != nil {
+			continue
+		}
+		end := endDate.AddDate(0, 0, 1).Format("2006-01-02") + "T00:00:00Z"
+		events = append(events, types.Event{
+			UID: "kanban:" + card.ID, CalendarID: "kanban", Title: card.Title,
+			Start: start, End: end, AllDay: true, Description: "칸반 카드 마감일",
+		})
+	}
+	return events, nil
+}
+
 // EventsByAccount는 단일 계정의 일정만 반환한다.
 // CalDAV 계정은 서버에서, 로컬 계정은 저장소에서 조회한다.
 func (s *Service) EventsByAccount(accID string) ([]types.Event, error) {
@@ -174,7 +226,7 @@ func (s *Service) EventsByAccount(accID string) ([]types.Event, error) {
 		return nil, err
 	}
 	if acc.Source == account.SourceCalDAV {
-		return s.caldavEvents(acc)
+		return s.store.EventsByCalendar(accID)
 	}
 	return s.store.EventsByCalendar(accID)
 }
@@ -189,11 +241,10 @@ func (s *Service) Calendars(accID string) ([]types.CalendarInfo, error) {
 	if acc.Source == account.SourceLocal {
 		return []types.CalendarInfo{{Name: acc.Name, Color: acc.Color}}, nil
 	}
-	cred, err := s.store.Credential(accID)
+	c, err := s.newCalDAVClient(acc)
 	if err != nil {
 		return nil, err
 	}
-	c := caldav.NewClient(acc, cred)
 	return c.Calendars()
 }
 
@@ -217,11 +268,10 @@ func (s *Service) EventCreate(ev *types.Event) (*types.Event, error) {
 		return nil, err
 	}
 	if acc.Source == account.SourceCalDAV {
-		cred, err := s.store.Credential(ev.CalendarID)
+		c, err := s.newCalDAVClient(acc)
 		if err != nil {
 			return nil, err
 		}
-		c := caldav.NewClient(acc, cred)
 		// 기본 캘린더 URL을 사용(첫 번째 캘린더).
 		cals, _ := c.Calendars()
 		calURL := acc.CalDAVURL
@@ -247,11 +297,10 @@ func (s *Service) EventUpdate(ev *types.Event) (*types.Event, error) {
 		return nil, err
 	}
 	if acc.Source == account.SourceCalDAV {
-		cred, err := s.store.Credential(ev.CalendarID)
+		c, err := s.newCalDAVClient(acc)
 		if err != nil {
 			return nil, err
 		}
-		c := caldav.NewClient(acc, cred)
 		cals, _ := c.Calendars()
 		calURL := acc.CalDAVURL
 		if len(cals) > 0 {
@@ -272,11 +321,10 @@ func (s *Service) EventDelete(calendarID, uid string) error {
 		return err
 	}
 	if acc.Source == account.SourceCalDAV {
-		cred, err := s.store.Credential(calendarID)
+		c, err := s.newCalDAVClient(acc)
 		if err != nil {
 			return err
 		}
-		c := caldav.NewClient(acc, cred)
 		cals, _ := c.Calendars()
 		calURL := acc.CalDAVURL
 		if len(cals) > 0 {
@@ -298,8 +346,11 @@ func (s *Service) SyncNow(accID string) error {
 	if acc.Source != account.SourceCalDAV {
 		return fmt.Errorf("로컬 계정은 동기화 대상이 아닙니다")
 	}
-	_, err = s.caldavEvents(acc)
+	events, err := s.caldavEvents(acc)
 	if err != nil {
+		return err
+	}
+	if err := s.store.ReplaceEvents(acc.ID, events); err != nil {
 		return err
 	}
 	acc.LastSyncAt = time.Now().UTC().Format(time.RFC3339)
@@ -308,25 +359,35 @@ func (s *Service) SyncNow(accID string) error {
 
 // caldavEvents는 CalDAV 서버에서 모든 캘린더의 일정을 조회해 합친다.
 func (s *Service) caldavEvents(acc *account.Account) ([]types.Event, error) {
-	cred, err := s.store.Credential(acc.ID)
+	c, err := s.newCalDAVClient(acc)
 	if err != nil {
 		return nil, err
 	}
-	c := caldav.NewClient(acc, cred)
 	cals, err := c.Calendars()
 	if err != nil {
 		return nil, err
 	}
+	if len(cals) == 0 {
+		return nil, fmt.Errorf("CalDAV 서버에서 캘린더를 찾지 못했습니다")
+	}
 	var all []types.Event
+	var firstCalendarError error
 	for _, cal := range cals {
 		events, err := c.Events(cal.Href)
 		if err != nil {
+			if firstCalendarError == nil {
+				firstCalendarError = fmt.Errorf("캘린더 %q 일정 조회 실패: %w", cal.Name, err)
+			}
 			continue
 		}
 		for i := range events {
 			events[i].CalendarID = acc.ID
+			events[i].CalendarHref = cal.Href
 		}
 		all = append(all, events...)
+	}
+	if len(all) == 0 && firstCalendarError != nil {
+		return nil, firstCalendarError
 	}
 	return all, nil
 }

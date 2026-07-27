@@ -10,6 +10,10 @@ type Event struct {
 	// CalendarID는 이 일정이 속한 캘린더(계정)의 ID.
 	CalendarID string `json:"calendarId"`
 
+	// CalendarHref는 외부 CalDAV 계정 안에서 일정이 속한 캘린더의 경로.
+	// 로컬 일정과 칸반 일정은 비어 있다.
+	CalendarHref string `json:"calendarHref,omitempty"`
+
 	// Title은 일정 제목(요약).
 	Title string `json:"title"`
 
