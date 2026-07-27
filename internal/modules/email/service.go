@@ -9,11 +9,16 @@ package email
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	"working/internal/config"
+	"working/internal/googleoauth"
 	"working/internal/modules/email/account"
+	"working/internal/modules/email/gmail"
 	"working/internal/modules/email/imap"
 	"working/internal/modules/email/provider"
 	"working/internal/modules/email/smtp"
@@ -85,7 +90,7 @@ func (s *Service) AccountCreate(acc *account.Account, credential string) (string
 	}
 	acc.ID = newID()
 	if acc.AuthType == "" {
-		acc.AuthType = "password"
+		acc.AuthType = account.AuthPassword
 	}
 	if err := s.store.Save(acc, credential); err != nil {
 		return "", err
@@ -122,6 +127,41 @@ func (s *Service) AccountDelete(id string) error {
 	return s.store.Delete(id)
 }
 
+// GoogleOAuthConnect는 Gmail API 사용을 위한 Google OAuth 인증을 수행하고 계정을 저장한다.
+// Calendar와 동일한 Google Client ID를 사용하며, Gmail 읽기/수정/발송 scope를 요청한다.
+func (s *Service) GoogleOAuthConnect(acc *account.Account) (string, error) {
+	if acc == nil {
+		return "", fmt.Errorf("계정 정보가 없습니다")
+	}
+	if strings.TrimSpace(acc.Email) == "" {
+		return "", fmt.Errorf("Google 계정 이메일은 필수입니다")
+	}
+	clientID := config.GoogleClientID()
+	if clientID == "" {
+		return "", fmt.Errorf("GOOGLE_CLIENT_ID가 설정되지 않았습니다")
+	}
+	token, err := googleoauth.Authenticate(clientID, config.GoogleClientSecret(), []string{
+		"https://www.googleapis.com/auth/gmail.modify",
+		"https://www.googleapis.com/auth/gmail.send",
+		"https://www.googleapis.com/auth/calendar",
+	})
+	if err != nil {
+		return "", err
+	}
+	credential, err := json.Marshal(token)
+	if err != nil {
+		return "", fmt.Errorf("Google OAuth 토큰 저장 형식 변환 실패: %w", err)
+	}
+	if acc.ID == "" {
+		acc.ID = newID()
+	}
+	acc.AuthType = account.AuthOAuth2
+	if err := s.store.Save(acc, string(credential)); err != nil {
+		return "", err
+	}
+	return acc.ID, nil
+}
+
 // Send는 지정한 계정으로 메일을 발송한다.
 // accID로 계정을 조회하고, 키체인에서 자격증명을 꺼내 SMTP 전송에 사용한다.
 func (s *Service) Send(accID string, msg *types.Message) error {
@@ -132,6 +172,15 @@ func (s *Service) Send(accID string, msg *types.Message) error {
 	cred, err := s.store.Credential(accID)
 	if err != nil {
 		return err
+	}
+	if acc.AuthType == account.AuthOAuth2 {
+		client, err := gmail.New(cred, func(updated string) error {
+			return s.store.Save(acc, updated)
+		})
+		if err != nil {
+			return err
+		}
+		return client.Send(acc, msg)
 	}
 	return s.sender.Send(acc, cred, msg)
 }
@@ -146,21 +195,112 @@ func (s *Service) Folders(accID string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if acc.AuthType == account.AuthOAuth2 {
+		client, err := gmail.New(cred, func(updated string) error {
+			return s.store.Save(acc, updated)
+		})
+		if err != nil {
+			return nil, err
+		}
+		return client.Labels()
+	}
 	return s.receiver.Folders(acc, cred)
 }
 
-// List는 지정한 폴더의 최신 메시지를 조회한다.
-// folder가 빈 문자열이면 INBOX를 사용한다.
+// List는 네트워크를 호출하지 않고 SQLite 캐시에서 목록과 본문을 읽는다.
 func (s *Service) List(accID, folder string) ([]types.Message, error) {
+	list, _, err := s.store.Cached(accID, folder)
+	return list, err
+}
+
+// Page는 네트워크를 호출하지 않고 캐시된 목록과 다음 페이지 커서를 반환한다.
+func (s *Service) Page(accID, folder string) (types.MessagePage, error) {
+	page, _, err := s.store.CachedPage(accID, folder)
+	return page, err
+}
+
+// ListRefresh는 사용자가 명시적으로 새로고침했을 때만 메일 서버를 조회하고,
+// 반환된 목록과 본문을 SQLite 캐시에 저장한다.
+func (s *Service) ListRefresh(accID, folder string) ([]types.Message, error) {
+	page, err := s.ListRefreshPage(accID, folder, "")
+	return page.Messages, err
+}
+
+// ListRefreshPage는 서버에서 지정한 페이지를 조회한다.
+// 첫 페이지는 캐시를 교체하고, 이후 페이지는 ListMore가 기존 캐시에 합친다.
+func (s *Service) ListRefreshPage(accID, folder, pageToken string) (types.MessagePage, error) {
 	acc, err := s.store.Get(accID)
 	if err != nil {
-		return nil, err
+		return types.MessagePage{}, err
 	}
 	cred, err := s.store.Credential(accID)
 	if err != nil {
-		return nil, err
+		return types.MessagePage{}, err
 	}
-	return s.receiver.List(acc, cred, folder)
+	var page types.MessagePage
+	if acc.AuthType == account.AuthOAuth2 {
+		client, clientErr := gmail.New(cred, func(updated string) error { return s.store.Save(acc, updated) })
+		if clientErr != nil {
+			return types.MessagePage{}, clientErr
+		}
+		page, err = client.ListPage(folder, pageToken)
+	} else {
+		page, err = s.receiver.ListPage(acc, cred, folder, pageToken)
+	}
+	if err != nil {
+		return types.MessagePage{}, err
+	}
+	if pageToken == "" {
+		if err := s.store.CachePage(accID, folder, page); err != nil {
+			return types.MessagePage{}, err
+		}
+	}
+	return page, nil
+}
+
+// ListMore는 현재 캐시에 서버의 다음 페이지를 추가하고 중복 메시지는 제거한다.
+func (s *Service) ListMore(accID, folder, pageToken string) (types.MessagePage, error) {
+	if pageToken == "" {
+		return types.MessagePage{}, fmt.Errorf("다음 이메일 페이지가 없습니다")
+	}
+	page, err := s.ListRefreshPage(accID, folder, pageToken)
+	if err != nil {
+		return types.MessagePage{}, err
+	}
+	current, _, err := s.store.CachedPage(accID, folder)
+	if err != nil {
+		return types.MessagePage{}, err
+	}
+	merged := append(current.Messages, page.Messages...)
+	seen := make(map[string]bool, len(merged))
+	unique := merged[:0]
+	for _, msg := range merged {
+		key := msg.ID
+		if key == "" {
+			key = fmt.Sprintf("uid:%d", msg.UID)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		unique = append(unique, msg)
+	}
+	if err := s.store.CachePage(accID, folder, types.MessagePage{Messages: unique, NextPageToken: page.NextPageToken}); err != nil {
+		return types.MessagePage{}, err
+	}
+	page.Messages = unique
+	return page, nil
+}
+
+// AttachmentData는 원문 MIME 메시지에서 첨부파일 바이트를 추출해 Base64로 반환한다.
+// 프론트엔드는 List 응답에 포함된 원문과 첨부파일 인덱스를 사용하므로,
+// 다운로드나 미리보기 때 메일 서버를 다시 조회하지 않는다.
+func (s *Service) AttachmentData(raw string, index int) (string, error) {
+	data, err := imap.ExtractRawAttachment([]byte(raw), index)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(data), nil
 }
 
 // newID는 16바이트 난수 기반의 계정 ID를 생성한다.

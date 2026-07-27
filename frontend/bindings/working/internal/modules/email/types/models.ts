@@ -27,6 +27,12 @@ export interface Attachment {
  */
 export interface Message {
     /**
+     * ID는 Gmail 등 외부 메일 서비스가 제공하는 원격 메시지 식별자이다.
+     * IMAP 메시지는 UID를 사용하므로 이 값이 비어 있을 수 있다.
+     */
+    "id"?: string;
+
+    /**
      * UID는 IMAP 메시지 식별자(수신 시에만 유효).
      */
     "uid"?: number;
@@ -57,6 +63,18 @@ export interface Message {
     "body": string;
 
     /**
+     * HTML은 수신 메일의 HTML 본문이다.
+     * 프론트엔드에서 허용된 태그만 필터링한 뒤 렌더링한다.
+     */
+    "html"?: string;
+
+    /**
+     * Raw는 수신한 이메일의 원문 MIME 데이터이다.
+     * 헤더와 multipart 경계를 포함하며, 원문 보기와 복사에 사용한다.
+     */
+    "raw"?: string;
+
+    /**
      * Date는 RFC3339 포맷의 메일 날짜(수신 시).
      */
     "date"?: string;
@@ -67,7 +85,21 @@ export interface Message {
     "unread"?: boolean;
 
     /**
+     * Favorite는 메일 서버에 저장된 즐겨찾기(별표) 여부이다.
+     */
+    "favorite"?: boolean;
+
+    /**
      * Attachments는 첨부파일 목록(전송 시 로컬 파일 경로, 수신 시 파일명만).
      */
     "attachments"?: Attachment[] | null;
+}
+
+/**
+ * MessagePage는 이메일 목록의 한 페이지와 다음 페이지 커서이다.
+ * 커서가 비어 있으면 현재 폴더의 모든 메시지를 불러온 것이다.
+ */
+export interface MessagePage {
+    "messages": Message[] | null;
+    "nextPageToken"?: string;
 }

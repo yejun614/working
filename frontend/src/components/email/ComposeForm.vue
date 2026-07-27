@@ -1,31 +1,99 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import Editor from '@toast-ui/editor'
+import '@toast-ui/editor/dist/toastui-editor.css'
+import '@toast-ui/editor/dist/theme/toastui-editor-dark.css'
 import { Service as EmailService } from '../../../bindings/working/internal/modules/email'
 import type { Account } from '../../../bindings/working/internal/modules/email/account/models'
 import type { Message } from '../../../bindings/working/internal/modules/email/types/models'
 
-const props = defineProps<{ account: Account | null }>()
+const props = defineProps<{
+  account: Account | null
+  accounts?: Account[]
+  initialAccountId?: string
+  replyTo?: Message | null
+  draft?: Message | null
+  embedded?: boolean
+}>()
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'sent'): void
+  (e: 'changed', message: Message): void
 }>()
 
-const to = ref('')
-const cc = ref('')
-const subject = ref('')
-const body = ref('')
+const initialSenderAccountId = (props.accounts || []).find(account =>
+  account.id === props.draft?.from || account.email === props.draft?.from
+)?.id || props.initialAccountId || props.account?.id || ''
+const senderAccountId = ref(initialSenderAccountId)
+const senderAccount = () =>
+  (props.accounts || []).find(account => account.id === senderAccountId.value) || props.account
+const to = ref(props.draft?.to || props.replyTo?.from || '')
+const cc = ref(props.draft?.cc || '')
+const subject = ref(props.draft?.subject || replySubject(props.replyTo?.subject || ''))
+const body = ref(props.draft?.body || replyBody(props.replyTo?.body || ''))
 const error = ref('')
 const sending = ref(false)
+const editorElement = ref<HTMLElement | null>(null)
+let editor: Editor | null = null
+
+function emitChanged() {
+  const account = senderAccount()
+  emit('changed', {
+    uid: props.draft?.uid,
+    from: account?.email || '',
+    to: to.value,
+    cc: cc.value,
+    subject: subject.value,
+    body: body.value,
+  })
+}
+
+function onEditorChanged() {
+  body.value = editor?.getMarkdown() || ''
+  emitChanged()
+}
+
+function replySubject(original: string): string {
+  return /^re:/i.test(original.trim()) ? original : `Re: ${original}`
+}
+
+function replyBody(original: string): string {
+  if (!original.trim()) return ''
+  const quoted = original
+    .split('\n')
+    .map(line => `> ${line}`)
+    .join('\n')
+  return `\n\n--- 원본 메시지 ---\n${quoted}`
+}
+
+onMounted(() => {
+  if (!editorElement.value) return
+  editor = new Editor({
+    el: editorElement.value,
+    height: '420px',
+    initialEditType: 'markdown',
+    previewStyle: 'vertical',
+    theme: 'dark',
+    initialValue: body.value,
+  })
+  editor.on('change', onEditorChanged)
+})
+
+onBeforeUnmount(() => {
+  editor?.destroy()
+  editor = null
+})
 
 async function send() {
   error.value = ''
-  if (!props.account) { error.value = '계정이 선택되지 않았습니다'; return }
-  if (!props.account.smtp) { error.value = '이 계정은 SMTP 설정이 없습니다'; return }
+  const account = senderAccount()
+  if (!account) { error.value = '보내는 계정을 선택하세요'; return }
+  if (!account.smtp) { error.value = '선택한 계정은 SMTP 설정이 없습니다'; return }
   if (!to.value.trim()) { error.value = '받는 사람은 필수입니다'; return }
   if (!subject.value.trim() && !body.value.trim()) { error.value = '제목 또는 본문이 필요합니다'; return }
 
   const msg: Message = {
-    from: props.account.email,
+    from: account.email,
     to: to.value.trim(),
     cc: cc.value.trim(),
     subject: subject.value,
@@ -33,7 +101,7 @@ async function send() {
   }
   sending.value = true
   try {
-    await EmailService.Send(props.account.id, msg)
+    await EmailService.Send(account.id, msg)
     emit('sent')
   } catch (e) {
     error.value = (e as Error).message
@@ -44,10 +112,10 @@ async function send() {
 </script>
 
 <template>
-  <div class="modal-backdrop" @click.self="emit('close')">
-    <div class="modal">
+  <div :class="props.embedded ? 'compose-detail' : 'modal-backdrop'" @click.self="emit('close')">
+    <div :class="props.embedded ? 'compose-editor' : 'modal'">
       <header class="modal-header">
-        <h2>메일 쓰기</h2>
+        <h2>{{ draft ? '임시 메일 이어쓰기' : replyTo ? '답장 작성' : '메일 쓰기' }}</h2>
         <button class="icon-btn" @click="emit('close')">✕</button>
       </header>
 
@@ -55,21 +123,32 @@ async function send() {
         <div v-if="error" class="alert error">{{ error }}</div>
 
         <label>
+          <span>보내는 사람 *</span>
+          <select v-model="senderAccountId" @change="emitChanged">
+            <option
+              v-for="account in (accounts || []).filter(account => account.smtp)"
+              :key="account.id"
+              :value="account.id"
+            >{{ account.name || account.email }} ({{ account.email }})</option>
+          </select>
+        </label>
+
+        <label>
           <span>받는 사람 *</span>
-          <input v-model="to" placeholder="recipient@example.com" />
+          <input v-model="to" placeholder="recipient@example.com" @input="emitChanged" />
         </label>
         <label>
           <span>참조</span>
-          <input v-model="cc" placeholder="cc@example.com" />
+          <input v-model="cc" placeholder="cc@example.com" @input="emitChanged" />
         </label>
         <label>
           <span>제목</span>
-          <input v-model="subject" />
+          <input v-model="subject" @input="emitChanged" />
         </label>
-        <label>
+        <div class="field">
           <span>본문</span>
-          <textarea v-model="body" rows="10"></textarea>
-        </label>
+          <div ref="editorElement" class="toast-editor"></div>
+        </div>
       </div>
 
       <footer class="modal-footer">
@@ -86,6 +165,18 @@ async function send() {
   background: rgba(0,0,0,0.5);
   display: flex; align-items: center; justify-content: center;
   z-index: 100;
+}
+.compose-detail {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.compose-editor {
+  display: flex;
+  flex: 1;
+  min-height: 100%;
+  flex-direction: column;
 }
 .modal {
   background: var(--panel);
@@ -108,11 +199,11 @@ async function send() {
   padding: 12px 18px;
   border-top: 1px solid var(--border);
 }
-label {
+.field, label {
   display: flex; flex-direction: column; gap: 4px;
   font-size: 12px; color: var(--muted);
 }
-input, textarea {
+input, textarea, select {
   background: var(--panel-2);
   border: 1px solid var(--border);
   color: var(--text);
@@ -121,6 +212,13 @@ input, textarea {
   font-size: 13px;
   font-family: inherit;
   resize: vertical;
+}
+.toast-editor {
+  width: 100%;
+  min-height: 420px;
+}
+.toast-editor :deep(.toastui-editor-defaultUI) {
+  border-color: var(--border);
 }
 .icon-btn {
   background: transparent;

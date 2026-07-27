@@ -49,7 +49,7 @@ func (s *Sender) Send(acc *account.Account, credential string, msg *types.Messag
 		from = fmt.Sprintf("%s <%s>", encodeHeader(acc.DisplayName), acc.Email)
 	}
 
-	raw, err := buildMIME(from, msg)
+	raw, err := BuildMIME(from, msg)
 	if err != nil {
 		return err
 	}
@@ -64,6 +64,12 @@ func (s *Sender) Send(acc *account.Account, credential string, msg *types.Messag
 	default:
 		return sendPlain(addr, auth, acc.Email, recipients, raw)
 	}
+}
+
+// BuildMIME는 메시지를 RFC 2045 MIME 바이트로 변환한다.
+// SMTP와 Gmail API 발송이 동일한 본문/첨부파일 포맷을 사용하도록 공개한다.
+func BuildMIME(from string, msg *types.Message) ([]byte, error) {
+	return buildMIME(from, msg)
 }
 
 // recipientsOf는 To + Cc 주소를 콤마로 분리해 반환한다.

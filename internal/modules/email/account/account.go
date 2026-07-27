@@ -8,6 +8,11 @@ const (
 	ProtocolSMTP Protocol = "smtp"
 	// ProtocolIMAP는 수신용 IMAP를 의미한다.
 	ProtocolIMAP Protocol = "imap"
+
+	// AuthPassword는 서버 비밀번호 또는 앱 비밀번호 인증이다.
+	AuthPassword = "password"
+	// AuthOAuth2는 Google OAuth access/refresh token 인증이다.
+	AuthOAuth2 = "oauth2"
 )
 
 // ServerConfig는 단일 프로토콜의 서버 연결 정보를 나타낸다.

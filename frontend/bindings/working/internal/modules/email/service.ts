@@ -61,6 +61,15 @@ export function AccountUpdate(acc: account$0.Account | null, credential: string)
 }
 
 /**
+ * AttachmentData는 원문 MIME 메시지에서 첨부파일 바이트를 추출해 Base64로 반환한다.
+ * 프론트엔드는 List 응답에 포함된 원문과 첨부파일 인덱스를 사용하므로,
+ * 다운로드나 미리보기 때 메일 서버를 다시 조회하지 않는다.
+ */
+export function AttachmentData(raw: string, index: number): $CancellablePromise<string> {
+    return $Call.ByID(789902975, raw, index);
+}
+
+/**
  * Folders는 지정한 계정의 IMAP 폴더 목록을 반환한다.
  */
 export function Folders(accID: string): $CancellablePromise<string[] | null> {
@@ -68,11 +77,48 @@ export function Folders(accID: string): $CancellablePromise<string[] | null> {
 }
 
 /**
- * List는 지정한 폴더의 최신 메시지를 조회한다.
- * folder가 빈 문자열이면 INBOX를 사용한다.
+ * GoogleOAuthConnect는 Gmail API 사용을 위한 Google OAuth 인증을 수행하고 계정을 저장한다.
+ * Calendar와 동일한 Google Client ID를 사용하며, Gmail 읽기/수정/발송 scope를 요청한다.
+ */
+export function GoogleOAuthConnect(acc: account$0.Account | null): $CancellablePromise<string> {
+    return $Call.ByID(3055166614, acc);
+}
+
+/**
+ * List는 네트워크를 호출하지 않고 SQLite 캐시에서 목록과 본문을 읽는다.
  */
 export function List(accID: string, folder: string): $CancellablePromise<types$0.Message[] | null> {
     return $Call.ByID(1288993830, accID, folder);
+}
+
+/**
+ * ListMore는 현재 캐시에 서버의 다음 페이지를 추가하고 중복 메시지는 제거한다.
+ */
+export function ListMore(accID: string, folder: string, pageToken: string): $CancellablePromise<types$0.MessagePage> {
+    return $Call.ByID(3413442055, accID, folder, pageToken);
+}
+
+/**
+ * ListRefresh는 사용자가 명시적으로 새로고침했을 때만 메일 서버를 조회하고,
+ * 반환된 목록과 본문을 SQLite 캐시에 저장한다.
+ */
+export function ListRefresh(accID: string, folder: string): $CancellablePromise<types$0.Message[] | null> {
+    return $Call.ByID(3233957613, accID, folder);
+}
+
+/**
+ * ListRefreshPage는 서버에서 지정한 페이지를 조회한다.
+ * 첫 페이지는 캐시를 교체하고, 이후 페이지는 ListMore가 기존 캐시에 합친다.
+ */
+export function ListRefreshPage(accID: string, folder: string, pageToken: string): $CancellablePromise<types$0.MessagePage> {
+    return $Call.ByID(4200415102, accID, folder, pageToken);
+}
+
+/**
+ * Page는 네트워크를 호출하지 않고 캐시된 목록과 다음 페이지 커서를 반환한다.
+ */
+export function Page(accID: string, folder: string): $CancellablePromise<types$0.MessagePage> {
+    return $Call.ByID(1910736881, accID, folder);
 }
 
 /**

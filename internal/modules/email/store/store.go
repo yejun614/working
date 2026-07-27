@@ -1,160 +1,174 @@
 package store
 
 import (
-	"encoding/json"
+	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 
+	"github.com/zalando/go-keyring"
 	"working/internal/config"
 	"working/internal/modules/email/account"
-
-	"github.com/zalando/go-keyring"
+	"working/internal/modules/email/types"
+	"working/internal/storage"
 )
 
-// accountsFile은 계정 메타데이터 파일명이다.
-const accountsFile = "email_accounts.json"
+const accountsKey = "email.accounts"
 
-// Store는 이메일 계정 메타데이터와 자격증명을 관리한다.
-// 계정 메타데이터(이름, 서버 정보 등)는 사용자 데이터 디렉토리의
-// JSON 파일에 저장되고, 비밀번호/토큰은 OS 키체인에 저장된다.
+type cachedMessages struct {
+	AccountID     string          `json:"accountId"`
+	Folder        string          `json:"folder"`
+	Messages      []types.Message `json:"messages"`
+	NextPageToken string          `json:"nextPageToken,omitempty"`
+	UpdatedAt     string          `json:"updatedAt"`
+}
+
 type Store struct {
-	// dataDir은 메타데이터 파일이 위치하는 디렉토리.
-	dataDir string
-
-	// keyringService는 키체인 서비스 식별자.
+	db             *sql.DB
 	keyringService string
 }
 
-// New는 기본 사용자 데이터 디렉토리를 사용하는 Store를 생성한다.
 func New() (*Store, error) {
-	dir, err := config.Dir()
-	if err != nil {
-		return nil, fmt.Errorf("사용자 데이터 디렉토리 조회 실패: %w", err)
+	db, e := storage.Open()
+	if e != nil {
+		return nil, e
 	}
-	return &Store{
-		dataDir:        dir,
-		keyringService: config.AppName + ".email",
-	}, nil
+	return &Store{db: db, keyringService: config.AppName + ".email"}, nil
 }
-
-// List는 등록된 모든 계정을 ID순으로 반환한다.
-// 비밀번호는 절대 포함되지 않는다.
+func (s *Store) load() ([]account.Account, error) {
+	var v []account.Account
+	found, e := storage.GetJSON(s.db, accountsKey, &v)
+	if e != nil {
+		return nil, e
+	}
+	if !found {
+		var old []account.Account
+		if ok, x := storage.LegacyJSON(mustDir(), "email_accounts.json", &old); x != nil {
+			return nil, x
+		} else if ok {
+			v = old
+			if e = s.save(v); e != nil {
+				return nil, e
+			}
+		}
+	}
+	if v == nil {
+		v = []account.Account{}
+	}
+	return v, nil
+}
+func mustDir() string                           { d, _ := config.Dir(); return d }
+func (s *Store) save(v []account.Account) error { return storage.PutJSON(s.db, accountsKey, v) }
 func (s *Store) List() ([]account.Account, error) {
-	accs, err := s.load()
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(accs, func(i, j int) bool { return accs[i].ID < accs[j].ID })
-	return accs, nil
+	v, e := s.load()
+	sort.Slice(v, func(i, j int) bool { return v[i].ID < v[j].ID })
+	return v, e
 }
-
-// Get은 ID로 계정을 조회한다.
 func (s *Store) Get(id string) (*account.Account, error) {
-	accs, err := s.load()
-	if err != nil {
-		return nil, err
+	v, e := s.load()
+	if e != nil {
+		return nil, e
 	}
-	for i := range accs {
-		if accs[i].ID == id {
-			return &accs[i], nil
+	for i := range v {
+		if v[i].ID == id {
+			return &v[i], nil
 		}
 	}
 	return nil, fmt.Errorf("계정을 찾을 수 없습니다: %s", id)
 }
-
-// Save는 계정 메타데이터를 저장하고, credential이 비어있지 않으면
-// 키체인에도 자격증명을 저장한다. credential이 빈 문자열이면
-// 기존 키체인 항목을 그대로 유지한다.
-func (s *Store) Save(acc *account.Account, credential string) error {
-	accs, err := s.load()
-	if err != nil {
-		return err
+func (s *Store) Save(a *account.Account, c string) error {
+	v, e := s.load()
+	if e != nil {
+		return e
 	}
 	found := false
-	for i := range accs {
-		if accs[i].ID == acc.ID {
-			accs[i] = *acc
+	for i := range v {
+		if v[i].ID == a.ID {
+			v[i] = *a
 			found = true
-			break
 		}
 	}
 	if !found {
-		accs = append(accs, *acc)
+		v = append(v, *a)
 	}
-
-	if credential != "" {
-		if err := keyring.Set(s.keyringService, acc.ID, credential); err != nil {
-			return fmt.Errorf("키체인 저장 실패: %w", err)
+	if c != "" {
+		if e = keyring.Set(s.keyringService, a.ID, c); e != nil {
+			return fmt.Errorf("키체인 저장 실패: %w", e)
 		}
 	}
-	return s.save(accs)
+	return s.save(v)
 }
-
-// Delete는 계정 메타데이터와 키체인 자격증명을 함께 삭제한다.
-// 메타데이터가 없더라도 키체인 항목은 시도한다(누적 잔여 제거).
 func (s *Store) Delete(id string) error {
-	accs, err := s.load()
-	if err != nil {
-		return err
+	v, e := s.load()
+	if e != nil {
+		return e
 	}
-	kept := accs[:0]
-	for _, a := range accs {
+	kept := v[:0]
+	for _, a := range v {
 		if a.ID != id {
 			kept = append(kept, a)
 		}
 	}
-	if err := s.save(kept); err != nil {
-		return err
+	if e = s.save(kept); e != nil {
+		return e
 	}
-	// 키체인 항목 삭제: 존재하지 않아도 에러는 무시.
 	_ = keyring.Delete(s.keyringService, id)
 	return nil
 }
-
-// Credential은 계정의 자격증명(비밀번호/토큰)을 키체인에서 조회한다.
 func (s *Store) Credential(id string) (string, error) {
-	cred, err := keyring.Get(s.keyringService, id)
-	if err != nil {
-		if err == keyring.ErrNotFound {
-			return "", fmt.Errorf("자격증명이 키체인에 없습니다: %s", id)
-		}
-		return "", fmt.Errorf("키체인 조회 실패: %w", err)
+	v, e := keyring.Get(s.keyringService, id)
+	if e == keyring.ErrNotFound {
+		return "", fmt.Errorf("자격증명이 키체인에 없습니다: %s", id)
 	}
-	return cred, nil
+	if e != nil {
+		return "", fmt.Errorf("키체인 조회 실패: %w", e)
+	}
+	return v, nil
+}
+func cacheKey(acc, folder string) string { return "email.messages." + acc + "." + folder }
+
+// Cached는 네트워크를 호출하지 않고 SQLite에 저장된 목록과 본문을 반환한다.
+func (s *Store) Cached(acc, folder string) ([]types.Message, bool, error) {
+	page, found, err := s.CachedPage(acc, folder)
+	return page.Messages, found, err
 }
 
-// load는 메타데이터 파일을 읽어 계정 목록을 반환한다.
-// 파일이 없으면 빈 목록을 반환한다.
-func (s *Store) load() ([]account.Account, error) {
-	path := filepath.Join(s.dataDir, accountsFile)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []account.Account{}, nil
-		}
-		return nil, fmt.Errorf("계정 파일 읽기 실패: %w", err)
-	}
-	var accs []account.Account
-	if err := json.Unmarshal(data, &accs); err != nil {
-		return nil, fmt.Errorf("계정 파일 파싱 실패: %w", err)
-	}
-	if accs == nil {
-		accs = []account.Account{}
-	}
-	return accs, nil
+// CachedPage는 캐시된 메시지와 다음 서버 페이지 커서를 반환한다.
+func (s *Store) CachedPage(acc, folder string) (types.MessagePage, bool, error) {
+	var c cachedMessages
+	found, err := storage.GetJSON(s.db, cacheKey(acc, folder), &c)
+	return types.MessagePage{Messages: c.Messages, NextPageToken: c.NextPageToken}, found, err
 }
 
-// save는 계정 목록을 메타데이터 파일에 쓴다.
-func (s *Store) save(accs []account.Account) error {
-	path := filepath.Join(s.dataDir, accountsFile)
-	data, err := json.MarshalIndent(accs, "", "  ")
-	if err != nil {
-		return fmt.Errorf("계정 직렬화 실패: %w", err)
+// Cache는 목록과 이메일 본문/원문을 SQLite에 저장한다.
+func (s *Store) Cache(acc, folder string, msgs []types.Message) error {
+	return s.CachePage(acc, folder, types.MessagePage{Messages: msgs})
+}
+
+// CachePage는 목록과 다음 서버 페이지 커서를 SQLite에 저장한다.
+func (s *Store) CachePage(acc, folder string, page types.MessagePage) error {
+	return storage.PutJSON(s.db, cacheKey(acc, folder), cachedMessages{AccountID: acc, Folder: folder, Messages: page.Messages, NextPageToken: page.NextPageToken})
+}
+
+// CachedFolders는 SQLite에 기록된 폴더만 반환한다.
+func (s *Store) CachedFolders(acc string) ([]string, error) {
+	var keys []string
+	rows, e := s.db.Query(`SELECT key FROM app_data WHERE key LIKE ?`, "email.messages."+acc+".%")
+	if e != nil {
+		return nil, e
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("계정 파일 쓰기 실패: %w", err)
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if e = rows.Scan(&k); e != nil {
+			return nil, e
+		}
+		keys = append(keys, k[len("email.messages."+acc+"."):])
 	}
-	return nil
+	return keys, nil
+}
+
+// CacheJSON는 동기화 결과의 부가 메타데이터를 저장한다.
+func (s *Store) CacheJSON(key string, v any) error { return storage.PutJSON(s.db, "email."+key, v) }
+func (s *Store) RawCache(key string, out any) (bool, error) {
+	return storage.GetJSON(s.db, "email."+key, out)
 }

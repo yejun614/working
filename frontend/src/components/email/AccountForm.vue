@@ -32,6 +32,12 @@ const saving = ref(false)
 const providers = ref<Provider[]>([])
 const selectedProviderId = ref<string>('')
 const detectedProvider = ref<Provider | null>(null)
+const isGoogle = computed(() =>
+  selectedProviderId.value === 'gmail' ||
+  detectedProvider.value?.id === 'gmail' ||
+  email.value.toLowerCase().endsWith('@gmail.com') ||
+  email.value.toLowerCase().endsWith('@googlemail.com')
+)
 
 async function loadProviders() {
   try {
@@ -49,6 +55,7 @@ watch(selectedProviderId, (id) => {
   const p = providers.value.find(p => p.id === id)
   if (!p) return
   applyProvider(p)
+  authType.value = p.id === 'gmail' ? 'oauth2' : 'password'
 })
 
 // 이메일 입력 시 도메인 기반으로 제공자 자동 감지.
@@ -89,7 +96,8 @@ function applyProvider(p: Provider) {
 async function save() {
   error.value = ''
   if (!email.value.trim()) { error.value = '이메일 주소는 필수입니다'; return }
-  if (!isEdit.value && !credential.value) { error.value = '비밀번호/토큰은 필수입니다'; return }
+  if (authType.value !== 'oauth2' && !isEdit.value && !credential.value) { error.value = '비밀번호/토큰은 필수입니다'; return }
+  if (authType.value === 'oauth2' && !isGoogle.value) { error.value = 'Google 제공자를 선택해야 합니다'; return }
 
   const smtp: ServerConfig | null = smtpHost.value
     ? { host: smtpHost.value.trim(), port: Number(smtpPort.value), encryption: smtpEncryption.value }
@@ -110,7 +118,9 @@ async function save() {
 
   saving.value = true
   try {
-    if (isEdit.value) {
+    if (authType.value === 'oauth2') {
+      await EmailService.GoogleOAuthConnect(acc)
+    } else if (isEdit.value) {
       await EmailService.AccountUpdate(acc, credential.value)
     } else {
       await EmailService.AccountCreate(acc, credential.value)
@@ -125,7 +135,7 @@ async function save() {
 </script>
 
 <template>
-  <div class="modal-backdrop" @click.self="emit('close')">
+  <div class="modal-backdrop">
     <div class="modal">
       <header class="modal-header">
         <h2>{{ isEdit ? '계정 편집' : '계정 추가' }}</h2>
@@ -166,11 +176,13 @@ async function save() {
             <span>인증 방식</span>
             <select v-model="authType">
               <option value="password">비밀번호</option>
+              <option v-if="isGoogle" value="oauth2">Google OAuth</option>
             </select>
           </div>
           <div class="field full">
-            <span>{{ isEdit ? '비밀번호/토큰 (변경 시에만 입력)' : '비밀번호/토큰 *' }}</span>
-            <input v-model="credential" type="password" autocomplete="new-password" />
+            <span>{{ authType === 'oauth2' ? 'Google OAuth' : (isEdit ? '비밀번호/토큰 (변경 시에만 입력)' : '비밀번호/토큰 *') }}</span>
+            <div v-if="authType === 'oauth2'" class="oauth-note">저장하면 기본 브라우저에서 Google 인증을 시작합니다.</div>
+            <input v-else v-model="credential" type="password" autocomplete="new-password" />
           </div>
         </div>
 
@@ -217,7 +229,7 @@ async function save() {
 
       <footer class="modal-footer">
         <button class="btn" @click="emit('close')">취소</button>
-        <button class="btn primary" :disabled="saving" @click="save">{{ saving ? '저장 중…' : '저장' }}</button>
+        <button class="btn primary" :disabled="saving" @click="save">{{ saving ? '처리 중…' : (authType === 'oauth2' ? 'Google로 연결' : '저장') }}</button>
       </footer>
     </div>
   </div>

@@ -3,5 +3,6 @@
 
 export type {
     Attachment,
-    Message
+    Message,
+    MessagePage
 } from "./models.js";
