@@ -256,7 +256,8 @@ onMounted(loadBoards)
       </section>
     </main>
 
-    <div v-if="editingColumnID" class="modal-backdrop" @click.self="closeCard"><form class="card-modal" @submit.prevent="saveCard"><header><h3>{{ editingCard ? '카드 편집' : '카드 추가' }}</h3><button type="button" class="icon-btn" @click="closeCard">✕</button></header><div class="form-body">
+    <!-- 배경 클릭으로는 닫지 않는다. 작성 중인 카드 내용이 실수로 사라지는 것을 막기 위함. -->
+    <div v-if="editingColumnID" class="modal-backdrop"><form class="card-modal" @submit.prevent="saveCard"><header><h3>{{ editingCard ? '카드 편집' : '카드 추가' }}</h3><button type="button" class="icon-btn" @click="closeCard">✕</button></header><div class="form-body">
       <label>제목 *<input v-model="form.title" autofocus /></label><label>설명<textarea v-model="form.description" rows="3" /></label><div class="form-grid"><label>마감일<input v-model="form.dueDate" type="date" /></label><label>우선순위<select v-model="form.priority"><option value="">없음</option><option value="low">낮음</option><option value="medium">보통</option><option value="high">높음</option></select></label></div><label>라벨 <small>쉼표로 구분</small><input v-model="form.labels" /></label><label>담당자<input v-model="form.assignee" /></label><label>체크리스트 <small>한 줄에 하나, 완료 항목은 [x]로 시작</small><textarea v-model="form.checklist" rows="4" /></label><label>첨부파일 경로 <small>쉼표로 구분</small><input v-model="form.attachments" /></label>
     </div><footer><button type="button" class="btn" @click="closeCard">취소</button><button class="btn primary">저장</button></footer></form></div>
   </div>
