@@ -9,6 +9,7 @@ import (
 	"working/internal/config"
 	accountmod "working/internal/modules/account"
 	calendarmod "working/internal/modules/calendar"
+	documentmod "working/internal/modules/document"
 	emailmod "working/internal/modules/email"
 	kanbanmod "working/internal/modules/kanban"
 )
@@ -47,6 +48,11 @@ func main() {
 		log.Fatalf("칸반 모듈 초기화 실패: %v", err)
 	}
 
+	documentService, err := documentmod.NewService()
+	if err != nil {
+		log.Fatalf("문서 모듈 초기화 실패: %v", err)
+	}
+
 	app := application.New(application.Options{
 		Name:        "working",
 		Description: "업무 보조 프로그램 - 모듈식 확장",
@@ -55,6 +61,7 @@ func main() {
 			application.NewService(emailService),
 			application.NewService(calendarService),
 			application.NewService(kanbanService),
+			application.NewService(documentService),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
