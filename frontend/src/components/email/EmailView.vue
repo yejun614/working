@@ -998,8 +998,10 @@ onMounted(() => {
 }
 /* 읽은 메일도 같은 자리를 차지하게 해 목록의 좌측 정렬이 흔들리지 않도록 한다. */
 .unread-dot.hidden { visibility: hidden; }
-.msg-delete { display: none; flex: 0 0 auto; }
-.message-list li:hover .msg-delete { display: inline-flex; }
+/* 삭제 버튼은 hover에서만 보이지만 자리는 늘 차지한다.
+   display로 넣고 빼면 발신자 텍스트 폭이 바뀌어 글자가 틀어진다. */
+.msg-delete { visibility: hidden; flex: 0 0 auto; }
+.message-list li:hover .msg-delete { visibility: visible; }
 .sr-only {
   position: absolute;
   width: 1px;
