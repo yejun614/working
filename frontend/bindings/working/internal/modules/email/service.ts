@@ -115,6 +115,14 @@ export function ListRefreshPage(accID: string, folder: string, pageToken: string
 }
 
 /**
+ * MessageDelete는 메일 서버에서 메일을 삭제하고 캐시에서도 제거한다.
+ * Gmail 계정은 휴지통으로 이동하고, IMAP 계정은 \Deleted 플래그 후 EXPUNGE로 폴더에서 지운다.
+ */
+export function MessageDelete(accID: string, folder: string, messageID: string, uid: number): $CancellablePromise<void> {
+    return $Call.ByID(2590607686, accID, folder, messageID, uid);
+}
+
+/**
  * MessageMarkRead는 메일 서버의 읽음 상태를 변경하고 SQLite 캐시에도 반영한다.
  * Gmail 계정은 UNREAD 라벨을, IMAP 계정은 \Seen 플래그를 사용한다.
  * messageID는 Gmail 원격 메시지 ID이며 IMAP 계정에서는 비어 있고 uid로 식별한다.

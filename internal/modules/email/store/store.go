@@ -169,6 +169,25 @@ func (s *Store) SetCachedUnread(acc, folder, id string, uid uint32, unread bool)
 	return s.CachePage(acc, folder, page)
 }
 
+// RemoveCached는 삭제된 메시지를 캐시에서 제거한다.
+func (s *Store) RemoveCached(acc, folder, id string, uid uint32) error {
+	page, found, e := s.CachedPage(acc, folder)
+	if e != nil || !found {
+		return e
+	}
+	kept := make([]types.Message, 0, len(page.Messages))
+	for _, m := range page.Messages {
+		if !matchMessage(m, id, uid) {
+			kept = append(kept, m)
+		}
+	}
+	if len(kept) == len(page.Messages) {
+		return nil
+	}
+	page.Messages = kept
+	return s.CachePage(acc, folder, page)
+}
+
 // matchMessage는 원격 메시지 ID 또는 IMAP UID로 캐시된 메시지를 식별한다.
 // Gmail은 ID를, IMAP은 UID를 사용하므로 둘 중 채워진 값으로 비교한다.
 func matchMessage(m types.Message, id string, uid uint32) bool {

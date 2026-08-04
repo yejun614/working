@@ -148,6 +148,25 @@ func (r *Receiver) SetSeen(acc *account.Account, credential, folder string, uid 
 	return nil
 }
 
+// Delete는 메시지에 \Deleted 플래그를 설정한 뒤 EXPUNGE로 폴더에서 제거한다.
+// EXPUNGE는 IMAP 표준상 해당 폴더에서 \Deleted가 붙은 메시지를 모두 정리하므로,
+// 다른 클라이언트가 이미 삭제 표시해 둔 메시지도 함께 사라질 수 있다.
+func (r *Receiver) Delete(acc *account.Account, credential, folder string, uid uint32) error {
+	c, err := r.openFolder(acc, credential, folder, uid)
+	if err != nil {
+		return err
+	}
+	defer c.Logout()
+
+	if err := storeFlag(c, uid, imap.AddFlags, imap.DeletedFlag); err != nil {
+		return fmt.Errorf("메일 삭제 표시 실패: %w", err)
+	}
+	if err := c.Expunge(nil); err != nil {
+		return fmt.Errorf("메일 삭제 반영 실패: %w", err)
+	}
+	return nil
+}
+
 // openFolder는 IMAP 서버에 연결하고 폴더를 쓰기 가능 모드로 선택한다.
 // 플래그 변경은 읽기 전용 선택에서는 거부되므로 Select의 readOnly를 false로 둔다.
 func (r *Receiver) openFolder(acc *account.Account, credential, folder string, uid uint32) (*client.Client, error) {

@@ -219,6 +219,15 @@ func (c *Client) SetUnread(id string, unread bool) error {
 	return c.post("/messages/"+url.PathEscape(id)+"/modify", payload, nil)
 }
 
+// Trash는 Gmail 메시지를 휴지통으로 옮긴다.
+// messages.delete는 복구가 불가능하므로 사용하지 않고, 웹 Gmail과 동일하게 휴지통으로 보낸다.
+func (c *Client) Trash(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("Gmail 메시지 ID가 필요합니다")
+	}
+	return c.post("/messages/"+url.PathEscape(id)+"/trash", struct{}{}, nil)
+}
+
 func (c *Client) get(path string, query url.Values, out any) error {
 	req, err := http.NewRequest(http.MethodGet, apiBase+path, nil)
 	if err != nil {

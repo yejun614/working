@@ -314,6 +314,27 @@ func (s *Service) MessageMarkRead(accID, folder, messageID string, uid uint32, r
 	return s.store.SetCachedUnread(accID, folder, messageID, uid, !read)
 }
 
+// MessageDelete는 메일 서버에서 메일을 삭제하고 캐시에서도 제거한다.
+// Gmail 계정은 휴지통으로 이동하고, IMAP 계정은 \Deleted 플래그 후 EXPUNGE로 폴더에서 지운다.
+func (s *Service) MessageDelete(accID, folder, messageID string, uid uint32) error {
+	acc, cred, err := s.credentials(accID)
+	if err != nil {
+		return err
+	}
+	if acc.AuthType == account.AuthOAuth2 {
+		client, err := s.gmailClient(acc, cred, messageID)
+		if err != nil {
+			return err
+		}
+		if err := client.Trash(messageID); err != nil {
+			return err
+		}
+	} else if err := s.receiver.Delete(acc, cred, folder, uid); err != nil {
+		return err
+	}
+	return s.store.RemoveCached(accID, folder, messageID, uid)
+}
+
 // credentials는 계정 메타데이터와 키체인 자격증명을 함께 조회한다.
 func (s *Service) credentials(accID string) (*account.Account, string, error) {
 	acc, err := s.store.Get(accID)

@@ -16,6 +16,7 @@ const selectedMessage = ref<Message | null>(null)
 
 const loadingList = ref(false)
 const loadingMore = ref(false)
+const deletingMessage = ref(false)
 const nextPageToken = ref('')
 const error = ref<string>('')
 const info = ref<string>('')
@@ -220,6 +221,11 @@ function selectMessage(m: Message) {
   if (m.unread) void markRead(m, true)
 }
 
+// 캐시된 메시지를 식별하는 키. Gmail은 원격 ID를, IMAP은 UID를 사용한다.
+function messageKey(m: Message): string {
+  return m.id || `uid:${m.uid}`
+}
+
 // 읽음 상태를 메일 서버(Gmail UNREAD 라벨 / IMAP \Seen 플래그)에 반영한다.
 // 화면은 먼저 바꾸고, 실패하면 이전 상태로 되돌린다.
 async function markRead(m: Message, read: boolean) {
@@ -236,6 +242,30 @@ async function markRead(m: Message, read: boolean) {
 
 function toggleRead(m: Message) {
   void markRead(m, m.unread === true)
+}
+
+// 메일을 서버에서 삭제한다. Gmail은 휴지통으로, IMAP은 폴더에서 제거된다.
+async function deleteMessage(m: Message) {
+  if (selectedFolder.value === LOCAL_DRAFT_FOLDER) {
+    deleteLocalDraft(m)
+    if (selectedMessage.value && messageKey(selectedMessage.value) === messageKey(m)) selectedMessage.value = null
+    return
+  }
+  if (!selectedAccountId.value || deletingMessage.value) return
+  if (!confirm(`메일 "${m.subject || '(제목 없음)'}" 을(를) 삭제할까요?`)) return
+
+  deletingMessage.value = true
+  try {
+    await EmailService.MessageDelete(selectedAccountId.value, selectedFolder.value, m.id || '', m.uid || 0)
+    const key = messageKey(m)
+    messages.value = messages.value.filter(item => messageKey(item) !== key)
+    if (selectedMessage.value && messageKey(selectedMessage.value) === key) selectedMessage.value = null
+    setInfo('메일이 삭제되었습니다.')
+  } catch (e) {
+    setError((e as Error).message)
+  } finally {
+    deletingMessage.value = false
+  }
 }
 
 function isDraftFolder(folder: string): boolean {
@@ -527,6 +557,12 @@ onMounted(() => {
             <div class="msg-row">
               <span class="unread-dot" :class="{ hidden: !m.unread }" aria-hidden="true"></span>
               <div class="msg-from">{{ m.from }}</div>
+              <button
+                class="icon-btn sm danger msg-delete"
+                title="메일 삭제"
+                :disabled="deletingMessage"
+                @click.stop="deleteMessage(m)"
+              >✕</button>
             </div>
             <div class="msg-subject">{{ m.subject }}</div>
             <div class="msg-date">{{ formatDate(m.date) }}</div>
@@ -575,6 +611,11 @@ onMounted(() => {
             v-if="selectedFolder !== LOCAL_DRAFT_FOLDER"
             @click="toggleRead(selectedMessage)"
           >{{ selectedMessage.unread ? '읽음으로 표시' : '안 읽음으로 표시' }}</button>
+          <button
+            class="btn danger-btn"
+            :disabled="deletingMessage"
+            @click="deleteMessage(selectedMessage)"
+          >{{ deletingMessage ? '삭제 중…' : '삭제' }}</button>
         </div>
         <section v-if="selectedMessage.attachments?.length" class="attachments" aria-label="첨부파일">
           <h3>첨부파일 ({{ selectedMessage.attachments.length }})</h3>
@@ -764,6 +805,8 @@ onMounted(() => {
 }
 .btn.primary:hover { background: var(--accent-hover); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn.danger-btn { color: var(--danger); }
+.btn.danger-btn:hover:not(:disabled) { background: rgba(255,90,106,0.12); border-color: var(--danger); }
 
 .alert {
   margin: 8px 16px;
@@ -802,6 +845,8 @@ onMounted(() => {
 }
 /* 읽은 메일도 같은 자리를 차지하게 해 목록의 좌측 정렬이 흔들리지 않도록 한다. */
 .unread-dot.hidden { visibility: hidden; }
+.msg-delete { display: none; flex: 0 0 auto; }
+.message-list li:hover .msg-delete { display: inline-flex; }
 .sr-only {
   position: absolute;
   width: 1px;
