@@ -3,9 +3,9 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import TuiCalendar from '@toast-ui/calendar'
 import '@toast-ui/calendar/dist/toastui-calendar.min.css'
 import { Service as CalendarService } from '../../../bindings/working/internal/modules/calendar'
-import type { Account } from '../../../bindings/working/internal/modules/calendar/account/models'
+import { Service as AccountService } from '../../../bindings/working/internal/modules/account'
+import type { Account } from '../../../bindings/working/internal/modules/account/types/models'
 import type { Event, CalendarInfo } from '../../../bindings/working/internal/modules/calendar/types/models'
-import CalendarAccountForm from './CalendarAccountForm.vue'
 import EventForm from './EventForm.vue'
 
 const accounts = ref<Account[]>([])
@@ -20,8 +20,6 @@ const info = ref('')
 const copyStatus = ref('')
 let copyStatusTimer: ReturnType<typeof setTimeout> | undefined
 
-const showAccountForm = ref(false)
-const editingAccount = ref<Account | null>(null)
 const showEventForm = ref(false)
 const editingEvent = ref<Event | null>(null)
 const eventFormDefaultDate = ref('')
@@ -55,7 +53,7 @@ async function reconnectAccount(acc: Account) {
   if (reconnectingAccountId.value) return
   reconnectingAccountId.value = acc.id
   try {
-    await CalendarService.GoogleOAuthReconnect(acc.id)
+    await AccountService.GoogleReconnect(acc.id)
     await CalendarService.SyncNow(acc.id)
     await refreshAccounts()
     await loadEvents()
@@ -324,7 +322,7 @@ function selectDate(date: string) {
 
 function accountColor(accId: string): string {
   const acc = accounts.value.find(a => a.id === accId)
-  return acc?.color || '#4f7cff'
+  return acc?.calendar?.color || '#4f7cff'
 }
 
 const calendarPalette = ['#4f7cff', '#a855f7', '#14b8a6', '#f97316', '#ef476f', '#eab308', '#06b6d4', '#84cc16']
@@ -342,8 +340,8 @@ function fallbackCalendar(acc: Account): DisplayCalendar {
   return {
     accountId: acc.id,
     name: acc.name,
-    color: acc.color,
-    displayColor: acc.color || calendarPalette[0],
+    color: acc.calendar?.color,
+    displayColor: acc.calendar?.color || calendarPalette[0],
   }
 }
 
@@ -409,7 +407,7 @@ async function autoRefreshEmptyCacheOnce() {
   startupAutoRefreshAttempted = true
   sessionStorage.setItem(startupAutoRefreshKey, '1')
 
-  const remoteAccounts = accounts.value.filter(acc => acc.source === 'caldav')
+  const remoteAccounts = accounts.value.filter(acc => acc.calendar?.source === 'caldav')
   if (remoteAccounts.length === 0) return
 
   // 계정별로 한 번씩만 동기화한 뒤 캐시를 다시 읽는다.
@@ -439,37 +437,6 @@ async function loadEvents() {
 
 async function onAccountChanged() {
   await loadEvents()
-}
-
-function openNewAccount() {
-  editingAccount.value = null
-  showAccountForm.value = true
-}
-
-function openEditAccount(acc: Account) {
-  editingAccount.value = acc
-  showAccountForm.value = true
-}
-
-async function deleteAccount(acc: Account) {
-  if (!confirm(`계정 "${acc.name}" 을(를) 삭제할까요? 해당 계정의 로컬 일정도 함께 삭제됩니다.`)) return
-  try {
-    await CalendarService.AccountDelete(acc.id)
-    setInfo('계정이 삭제되었습니다.')
-    await refreshAccounts()
-    await loadEvents()
-  } catch (e) {
-    setError((e as Error).message)
-  }
-}
-
-async function onAccountSaved() {
-  showAccountForm.value = false
-  await refreshAccounts()
-  await loadEvents()
-  if (!error.value) {
-    setInfo('계정이 저장되었습니다.')
-  }
 }
 
 function openNewEvent(date?: string) {
@@ -589,7 +556,6 @@ onBeforeUnmount(() => {
       <div class="account-section">
         <div class="section-title">
           <span>캘린더</span>
-          <button class="icon-btn" title="계정 추가" @click="openNewAccount">+</button>
         </div>
         <ul class="account-list">
           <li
@@ -599,7 +565,7 @@ onBeforeUnmount(() => {
             @click="selectedAccountId = a.id; onAccountChanged()"
           >
             <div class="account-row">
-              <span class="color-dot" :style="{ background: a.color || '#4f7cff' }"></span>
+              <span class="color-dot" :style="{ background: a.calendar?.color || '#4f7cff' }"></span>
               <div class="account-name">{{ a.name }}</div>
               <span v-if="a.authError" class="auth-warning" :title="a.authError">⚠</span>
               <div class="account-actions">
@@ -610,14 +576,12 @@ onBeforeUnmount(() => {
                   :disabled="!!reconnectingAccountId"
                   @click.stop="reconnectAccount(a)"
                 >⟳</button>
-                <button v-if="a.source === 'caldav'" class="icon-btn sm" title="동기화" @click.stop="syncAccount(a)">↻</button>
-                <button class="icon-btn sm" title="편집" @click.stop="openEditAccount(a)">✎</button>
-                <button class="icon-btn sm danger" title="삭제" @click.stop="deleteAccount(a)">✕</button>
+                <button v-if="a.calendar?.source === 'caldav'" class="icon-btn sm" title="동기화" @click.stop="syncAccount(a)">↻</button>
               </div>
             </div>
             <div class="account-sub">
-              <span class="badge">{{ a.source === 'caldav' ? 'CalDAV' : '로컬' }}</span>
-              <span v-if="a.lastSyncAt" class="last-sync">{{ formatDate(a.lastSyncAt) }}</span>
+              <span class="badge">{{ a.calendar?.source === 'caldav' ? 'CalDAV' : '로컬' }}</span>
+              <span v-if="a.calendar?.lastSyncAt" class="last-sync">{{ formatDate(a.calendar.lastSyncAt) }}</span>
             </div>
             <ul v-if="calendarsByAccount[a.id]?.length" class="calendar-list">
               <li v-for="calendar in calendarsByAccount[a.id]" :key="calendar.href || calendar.name" class="calendar-item">
@@ -633,7 +597,7 @@ onBeforeUnmount(() => {
               </li>
             </ul>
           </li>
-          <li v-if="accounts.length === 0" class="empty">등록된 캘린더가 없습니다</li>
+          <li v-if="accounts.length === 0" class="empty">계정 탭에서 캘린더를 추가하세요</li>
         </ul>
       </div>
     </aside>
@@ -725,13 +689,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </section>
-
-    <CalendarAccountForm
-      v-if="showAccountForm"
-      :account="editingAccount"
-      @close="showAccountForm = false"
-      @saved="onAccountSaved"
-    />
     <EventForm
       v-if="showEventForm"
       :accounts="accounts"

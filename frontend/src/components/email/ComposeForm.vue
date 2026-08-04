@@ -4,7 +4,8 @@ import Editor from '@toast-ui/editor'
 import '@toast-ui/editor/dist/toastui-editor.css'
 import '@toast-ui/editor/dist/theme/toastui-editor-dark.css'
 import { Service as EmailService } from '../../../bindings/working/internal/modules/email'
-import type { Account } from '../../../bindings/working/internal/modules/email/account/models'
+import type { Account } from '../../../bindings/working/internal/modules/account/types/models'
+import { canSendMail } from '../../accounts'
 import type { Message } from '../../../bindings/working/internal/modules/email/types/models'
 
 const props = defineProps<{
@@ -88,12 +89,12 @@ async function send() {
   error.value = ''
   const account = senderAccount()
   if (!account) { error.value = '보내는 계정을 선택하세요'; return }
-  if (!account.smtp) { error.value = '선택한 계정은 SMTP 설정이 없습니다'; return }
+  if (!canSendMail(account)) { error.value = '선택한 계정은 메일 발송 설정이 없습니다'; return }
   if (!to.value.trim()) { error.value = '받는 사람은 필수입니다'; return }
   if (!subject.value.trim() && !body.value.trim()) { error.value = '제목 또는 본문이 필요합니다'; return }
 
   const msg: Message = {
-    from: account.email,
+    from: account.email || '',
     to: to.value.trim(),
     cc: cc.value.trim(),
     subject: subject.value,
@@ -126,7 +127,7 @@ async function send() {
           <span>보내는 사람 *</span>
           <select v-model="senderAccountId" @change="emitChanged">
             <option
-              v-for="account in (accounts || []).filter(account => account.smtp)"
+              v-for="account in (accounts || []).filter(canSendMail)"
               :key="account.id"
               :value="account.id"
             >{{ account.name || account.email }} ({{ account.email }})</option>

@@ -6,7 +6,7 @@ package provider
 import (
 	"strings"
 
-	"working/internal/modules/email/account"
+	account "working/internal/modules/account/types"
 )
 
 // Provider는 단일 이메일 서비스 제공자의 메타데이터와 서버 설정을 나타낸다.

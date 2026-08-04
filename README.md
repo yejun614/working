@@ -22,6 +22,9 @@
 Windows 데스크톱 업무 보조 앱입니다. 각 기능은 독립적인 모듈로 분리되어
 있어, 필요한 기능만 켜고 끌 수 있는 모듈식 구조로 되어 있습니다.
 
+- **계정**: 메일과 캘린더가 공유하는 통합 계정 관리. 계정 하나에 메일과
+캘린더 기능을 함께 켤 수 있고, Google 계정은 OAuth 토큰 하나로 Gmail과
+Google 캘린더를 모두 사용합니다.
 - **이메일**: Gmail · Naver · Daum · Outlook · Yahoo · iCloud 등 다양한
 제공자 지원. SMTP 발송과 IMAP/Gmail API 수신, 첨부파일 처리, 계정별
 캐시를 제공합니다.
@@ -39,6 +42,18 @@ Windows 데스크톱 업무 보조 앱입니다. 각 기능은 독립적인 모�
 ---
 
 ## ✨ 주요 기능
+
+### 👤 계정 모듈
+
+
+| 기능           | 설명                                            |
+| ------------ | --------------------------------------------- |
+| 통합 계정        | 계정 하나가 메일 설정과 캘린더 설정을 함께 보유. 필요한 기능만 켜고 끔     |
+| 단일 Google 인증 | OAuth 토큰 하나를 Gmail과 Google 캘린더가 공유. 재인증도 한 번  |
+| 서버 설정 자동 완성  | 이메일 도메인으로 SMTP/IMAP과 CalDAV URL을 함께 채움         |
+| 재인증 안내       | 토큰 만료·철회를 감지해 계정 목록에 경고와 재인증 버튼 표시            |
+| 자동 이관        | 기존 모듈별 계정과 키체인 자격증명을 첫 실행 때 통합 계정으로 이관        |
+
 
 ### 📧 이메일 모듈
 
@@ -106,22 +121,27 @@ working/
 │  ├─ googleoauth/                  # Google OAuth 공용 인증 흐름
 │  ├─ storage/                      # 공용 SQLite 저장소
 │  └─ modules/
+│     ├─ account/                   # 통합 계정 모듈 (메일·캘린더 공용)
+│     │  ├─ service.go              # Wails Service
+│     │  ├─ types/                  # 통합 계정 모델
+│     │  └─ store/                  # 계정 목록 + 키체인 + 기존 계정 이관
 │     ├─ email/                     # 이메일 모듈
 │     │  ├─ service.go              # Wails Service (프론트엔드 API 진입점)
 │     │  ├─ gmail/                  # Gmail API 클라이언트
 │     │  ├─ imap/                   # IMAP 수신
 │     │  ├─ smtp/                   # SMTP 발송
-│     │  └─ store/                  # 계정 메타데이터 + 메일 캐시
+│     │  └─ store/                  # 메일 캐시
 │     ├─ calendar/                  # 캘린더 모듈
 │     │  ├─ service.go              # Wails Service
 │     │  ├─ caldav/                 # CalDAV 클라이언트
 │     │  ├─ ical/                   # iCalendar 파싱/직렬화
-│     │  └─ store/                  # 계정 + 일정 캐시
+│     │  └─ store/                  # 일정 캐시
 │     └─ kanban/                    # 칸반 모듈
 │        ├─ service.go              # Wails Service
 │        └─ store/                  # 보드/컬럼/카드 저장
 ├─ frontend/
 │  ├─ src/components/
+│  │  ├─ account/                   # 통합 계정 관리 UI
 │  │  ├─ email/                     # 이메일 UI
 │  │  ├─ calendar/                  # 캘린더 UI
 │  │  └─ kanban/                    # 칸반 UI
@@ -194,7 +214,8 @@ wails3 generate bindings -clean=true -ts -i
 ## 🔐 보안
 
 - 비밀번호·OAuth 토큰 등 자격증명은 OS 키체인(Windows Credential Manager)에
-저장되며 소스 코드나 평문 파일에 기록되지 않습니다.
+저장되며 소스 코드나 평문 파일에 기록되지 않습니다. 통합 계정 모듈이
+`working.account` 항목 하나로 관리합니다.
 - 계정 메타데이터와 캐시는 사용자 데이터 디렉터리의 SQLite 데이터베이스에
 저장됩니다.
 - `.env` 파일은 `.gitignore`에 의해 커밋에서 제외됩니다.

@@ -13,58 +13,31 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as account$0 from "./account/models.js";
+import * as types$0 from "../account/types/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as provider$0 from "./provider/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as types$0 from "./types/models.js";
-
-/**
- * AccountCreate는 새 계정을 등록하고 자격증명을 키체인에 저장한다.
- * id는 자동 생성되어 반환된다. CalDAV 계정은 credential(비밀번호/토큰)이 필수.
- * 로컬 계정(SourceLocal)은 credential을 사용하지 않는다.
- */
-export function AccountCreate(acc: account$0.Account | null, credential: string): $CancellablePromise<string> {
-    return $Call.ByID(1731330621, acc, credential);
-}
-
-/**
- * AccountDelete는 계정과 키체인 자격증명, 로컬 일정을 함께 삭제한다.
- */
-export function AccountDelete(id: string): $CancellablePromise<void> {
-    return $Call.ByID(2863879722, id);
-}
+import * as types$1 from "./types/models.js";
 
 /**
  * AccountGet은 ID로 계정을 조회한다.
  */
-export function AccountGet(id: string): $CancellablePromise<account$0.Account | null> {
+export function AccountGet(id: string): $CancellablePromise<types$0.Account | null> {
     return $Call.ByID(129092279, id);
 }
 
 /**
- * AccountList는 등록된 모든 캘린더 계정을 반환한다(자격증명 제외).
+ * AccountList는 캘린더 기능이 켜진 계정만 반환한다(자격증명 제외).
+ * 계정 등록·수정·삭제와 Google 재인증은 통합 계정 모듈이 담당한다.
  */
-export function AccountList(): $CancellablePromise<account$0.Account[] | null> {
+export function AccountList(): $CancellablePromise<types$0.Account[] | null> {
     return $Call.ByID(2045930849);
-}
-
-/**
- * AccountUpdate는 기존 계정 메타데이터를 갱신한다.
- * credential이 빈 문자열이 아니면 키체인 자격증명도 함께 갱신하고,
- * 빈 문자열이면 기존 자격증명을 유지한다.
- */
-export function AccountUpdate(acc: account$0.Account | null, credential: string): $CancellablePromise<void> {
-    return $Call.ByID(3666554708, acc, credential);
 }
 
 /**
  * Calendars는 CalDAV 계정의 캘린더(폴더) 목록을 반환한다.
  * 로컬 계정인 경우 기본 캘린더 하나를 반환한다.
  */
-export function Calendars(accID: string): $CancellablePromise<types$0.CalendarInfo[] | null> {
+export function Calendars(accID: string): $CancellablePromise<types$1.CalendarInfo[] | null> {
     return $Call.ByID(3429496301, accID);
 }
 
@@ -72,7 +45,7 @@ export function Calendars(accID: string): $CancellablePromise<types$0.CalendarIn
  * EventCreate은 새 일정을 생성한다.
  * 로컬 계정은 저장소에 저장하고, CalDAV 계정은 서버에 PUT 한다.
  */
-export function EventCreate(ev: types$0.Event | null): $CancellablePromise<types$0.Event | null> {
+export function EventCreate(ev: types$1.Event | null): $CancellablePromise<types$1.Event | null> {
     return $Call.ByID(665461826, ev);
 }
 
@@ -89,7 +62,7 @@ export function EventDelete(calendarID: string, uid: string): $CancellablePromis
  * 네트워크를 사용하지 않고 마지막 동기화 스냅샷을 보여준다.
  * from/to가 빈 문자열이면 전체 범위를 조회한다.
  */
-export function EventList($from: string, to: string): $CancellablePromise<types$0.Event[] | null> {
+export function EventList($from: string, to: string): $CancellablePromise<types$1.Event[] | null> {
     return $Call.ByID(423387250, $from, to);
 }
 
@@ -97,7 +70,7 @@ export function EventList($from: string, to: string): $CancellablePromise<types$
  * EventUpdate는 기존 일정을 갱신한다.
  * CalDAV 계정은 ETag 기반 동시성 제어를 수행한다.
  */
-export function EventUpdate(ev: types$0.Event | null): $CancellablePromise<types$0.Event | null> {
+export function EventUpdate(ev: types$1.Event | null): $CancellablePromise<types$1.Event | null> {
     return $Call.ByID(68121231, ev);
 }
 
@@ -105,44 +78,8 @@ export function EventUpdate(ev: types$0.Event | null): $CancellablePromise<types
  * EventsByAccount는 단일 계정의 일정만 반환한다.
  * CalDAV 계정은 서버에서, 로컬 계정은 저장소에서 조회한다.
  */
-export function EventsByAccount(accID: string): $CancellablePromise<types$0.Event[] | null> {
+export function EventsByAccount(accID: string): $CancellablePromise<types$1.Event[] | null> {
     return $Call.ByID(760386085, accID);
-}
-
-/**
- * GoogleOAuthConnect는 Google OAuth 인증을 완료한 뒤 캘린더 계정을 저장한다.
- * 인증 화면은 기본 브라우저에서 열고, authorization code 수신과 토큰 교환은
- * 로컬 callback 서버를 통해 Go에서 수행한다.
- */
-export function GoogleOAuthConnect(acc: account$0.Account | null): $CancellablePromise<string> {
-    return $Call.ByID(2793874006, acc);
-}
-
-/**
- * GoogleOAuthReconnect는 토큰이 만료·철회된 기존 Google 계정을 다시 인증한다.
- * 계정 설정은 그대로 두고 키체인의 토큰만 새로 발급받아 교체하며,
- * 성공하면 계정에 기록된 재인증 안내를 해제한다.
- */
-export function GoogleOAuthReconnect(accID: string): $CancellablePromise<void> {
-    return $Call.ByID(4162656893, accID);
-}
-
-/**
- * ProviderList는 사전 정의된 캘린더 서비스 제공자 목록을 반환한다.
- * 프론트엔드에서 계정 추가 시 드롭다운으로 표시하거나,
- * 계정 도메인 자동 인식에 사용한다.
- */
-export function ProviderList(): $CancellablePromise<provider$0.Provider[] | null> {
-    return $Call.ByID(3362746703);
-}
-
-/**
- * ProviderLookupByEmail은 이메일 주소의 도메인으로 제공자를 찾는다.
- * 일치하는 사전 정의 제공자가 없으면 nil을 반환한다.
- * 프론트엔드에서 사용자 이름 입력 중 CalDAV URL 자동 채우기에 사용한다.
- */
-export function ProviderLookupByEmail(email: string): $CancellablePromise<provider$0.Provider | null> {
-    return $Call.ByID(3661136536, email);
 }
 
 /**

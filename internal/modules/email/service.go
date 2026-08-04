@@ -1,26 +1,21 @@
 // Package email 은 "working" 앱의 이메일 모듈 진입점이다.
 //
-// 이 모듈은 SMTP 발송, IMAP 수신, 계정 관리(키체인 자격증명 포함)
-// 기능을 Wails Service 형태로 프론트엔드에 노출한다.
-// 다른 모듈과 마찬가지로 internal/modules/<이름> 패키지로 격리되며,
-// main.go에서 원하는 모듈의 Service만 application.NewService로 등록하면
-// 해당 모듈만 앱에 포함된다.
+// 이 모듈은 SMTP 발송과 IMAP/Gmail 수신 기능을 Wails Service 형태로
+// 프론트엔드에 노출한다. 계정과 자격증명은 통합 계정 모듈
+// (internal/modules/account)이 관리하며, 이 모듈은 메일 기능이 켜진
+// 계정만 읽어 사용하고 메일 캐시만 직접 보관한다.
+// 다른 모듈과 마찬가지로 main.go에서 Service를 등록하면 앱에 포함된다.
 package email
 
 import (
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	"working/internal/config"
-	"working/internal/googleoauth"
-	"working/internal/modules/email/account"
+	accountstore "working/internal/modules/account/store"
+	account "working/internal/modules/account/types"
 	"working/internal/modules/email/gmail"
 	"working/internal/modules/email/imap"
-	"working/internal/modules/email/provider"
 	"working/internal/modules/email/smtp"
 	"working/internal/modules/email/store"
 	"working/internal/modules/email/types"
@@ -30,6 +25,7 @@ import (
 // 모든 메서드는 Wails를 통해 JS/TS에서 호출 가능하다.
 type Service struct {
 	store    *store.Store
+	accounts *accountstore.Store
 	sender   *smtp.Sender
 	receiver *imap.Receiver
 }
@@ -41,8 +37,13 @@ func NewService() (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	accounts, err := accountstore.New()
+	if err != nil {
+		return nil, err
+	}
 	return &Service{
 		store:    st,
+		accounts: accounts,
 		sender:   smtp.New(),
 		receiver: imap.New(),
 	}, nil
@@ -52,131 +53,69 @@ func NewService() (*Service, error) {
 // 현재는 유지할 상태가 없으므로 아무 작업도 하지 않는다.
 func (s *Service) ServiceShutdown() {}
 
-// ProviderList는 사전 정의된 이메일 제공자 목록을 반환한다.
-// 프론트엔드에서 계정 추가 시 드롭다운으로 표시하거나,
-// 이메일 도메인 자동 인식에 사용한다.
-func (s *Service) ProviderList() []provider.Provider {
-	return provider.All()
-}
-
-// ProviderLookupByEmail은 이메일 주소의 도메인으로 제공자를 찾는다.
-// 일치하는 사전 정의 제공자가 없으면 nil을 반환한다.
-// 프론트엔드에서 이메일 입력 중 서버 필드 자동 채우기에 사용한다.
-func (s *Service) ProviderLookupByEmail(email string) *provider.Provider {
-	return provider.LookupByEmail(email)
-}
-
-// AccountList는 등록된 모든 계정을 반환한다(자격증명 제외).
+// AccountList는 메일 기능이 켜진 계정만 반환한다(자격증명 제외).
+// 계정 등록·수정·삭제는 통합 계정 모듈이 담당한다.
 func (s *Service) AccountList() ([]account.Account, error) {
-	return s.store.List()
+	all, err := s.accounts.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]account.Account, 0, len(all))
+	for _, acc := range all {
+		if acc.UsesMail() {
+			out = append(out, acc)
+		}
+	}
+	return out, nil
 }
 
 // AccountGet은 ID로 계정을 조회한다.
 func (s *Service) AccountGet(id string) (*account.Account, error) {
-	return s.store.Get(id)
+	return s.mailAccount(id)
 }
 
-// AccountCreate는 새 계정을 등록하고 자격증명을 키체인에 저장한다.
-// id는 자동 생성되어 반환된다. credential은 빈 문자열이면 안 된다.
-func (s *Service) AccountCreate(acc *account.Account, credential string) (string, error) {
-	if acc == nil {
-		return "", fmt.Errorf("계정 정보가 없습니다")
-	}
-	if strings.TrimSpace(acc.Email) == "" {
-		return "", fmt.Errorf("이메일 주소는 필수입니다")
-	}
-	if credential == "" {
-		return "", fmt.Errorf("자격증명은 필수입니다")
-	}
-	acc.ID = newID()
-	if acc.AuthType == "" {
-		acc.AuthType = account.AuthPassword
-	}
-	if err := s.store.Save(acc, credential); err != nil {
-		return "", err
-	}
-	return acc.ID, nil
-}
-
-// AccountUpdate는 기존 계정 메타데이터를 갱신한다.
-// credential이 빈 문자열이 아니면 키체인 자격증명도 함께 갱신하고,
-// 빈 문자열이면 기존 자격증명을 유지한다.
-func (s *Service) AccountUpdate(acc *account.Account, credential string) error {
-	if acc == nil || acc.ID == "" {
-		return fmt.Errorf("계정 ID가 필요합니다")
-	}
-	existing, err := s.store.Get(acc.ID)
+// mailAccount는 메일 기능이 켜진 계정을 조회한다.
+func (s *Service) mailAccount(id string) (*account.Account, error) {
+	acc, err := s.accounts.Get(id)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if acc.Email == "" {
-		acc.Email = existing.Email
+	if !acc.UsesMail() {
+		return nil, fmt.Errorf("메일을 사용하지 않는 계정입니다: %s", acc.Name)
 	}
-	if acc.AuthType == "" {
-		acc.AuthType = existing.AuthType
-	}
-	return s.store.Save(acc, credential)
+	return acc, nil
 }
 
-// AccountDelete는 계정과 키체인 자격증명을 함께 삭제한다.
-// 메타데이터가 이미 없더라도 키체인 잔여물은 제거를 시도한다.
-func (s *Service) AccountDelete(id string) error {
-	if id == "" {
-		return fmt.Errorf("계정 ID가 필요합니다")
+// credentials는 계정과 키체인 자격증명을 함께 조회한다.
+func (s *Service) credentials(accID string) (*account.Account, string, error) {
+	acc, err := s.mailAccount(accID)
+	if err != nil {
+		return nil, "", err
 	}
-	return s.store.Delete(id)
+	cred, err := s.accounts.Credential(accID)
+	if err != nil {
+		return nil, "", err
+	}
+	return acc, cred, nil
 }
 
-// GoogleOAuthConnect는 Gmail API 사용을 위한 Google OAuth 인증을 수행하고 계정을 저장한다.
-// Calendar와 동일한 Google Client ID를 사용하며, Gmail 읽기/수정/발송 scope를 요청한다.
-func (s *Service) GoogleOAuthConnect(acc *account.Account) (string, error) {
-	if acc == nil {
-		return "", fmt.Errorf("계정 정보가 없습니다")
-	}
-	if strings.TrimSpace(acc.Email) == "" {
-		return "", fmt.Errorf("Google 계정 이메일은 필수입니다")
-	}
-	clientID := config.GoogleClientID()
-	if clientID == "" {
-		return "", fmt.Errorf("GOOGLE_CLIENT_ID가 설정되지 않았습니다")
-	}
-	token, err := googleoauth.Authenticate(clientID, config.GoogleClientSecret(), []string{
-		"https://www.googleapis.com/auth/gmail.modify",
-		"https://www.googleapis.com/auth/gmail.send",
-		"https://www.googleapis.com/auth/calendar",
+// newGmailClient는 OAuth 계정용 Gmail 클라이언트를 만든다.
+// 갱신된 access token은 통합 계정의 키체인 자격증명에 다시 저장한다.
+func (s *Service) newGmailClient(acc *account.Account, cred string) (*gmail.Client, error) {
+	return gmail.New(cred, func(updated string) error {
+		return s.accounts.SaveCredential(acc.ID, updated)
 	})
-	if err != nil {
-		return "", err
-	}
-	credential, err := json.Marshal(token)
-	if err != nil {
-		return "", fmt.Errorf("Google OAuth 토큰 저장 형식 변환 실패: %w", err)
-	}
-	if acc.ID == "" {
-		acc.ID = newID()
-	}
-	acc.AuthType = account.AuthOAuth2
-	if err := s.store.Save(acc, string(credential)); err != nil {
-		return "", err
-	}
-	return acc.ID, nil
 }
 
 // Send는 지정한 계정으로 메일을 발송한다.
 // accID로 계정을 조회하고, 키체인에서 자격증명을 꺼내 SMTP 전송에 사용한다.
 func (s *Service) Send(accID string, msg *types.Message) error {
-	acc, err := s.store.Get(accID)
-	if err != nil {
-		return err
-	}
-	cred, err := s.store.Credential(accID)
+	acc, cred, err := s.credentials(accID)
 	if err != nil {
 		return err
 	}
 	if acc.AuthType == account.AuthOAuth2 {
-		client, err := gmail.New(cred, func(updated string) error {
-			return s.store.Save(acc, updated)
-		})
+		client, err := s.newGmailClient(acc, cred)
 		if err != nil {
 			return err
 		}
@@ -187,18 +126,12 @@ func (s *Service) Send(accID string, msg *types.Message) error {
 
 // Folders는 지정한 계정의 IMAP 폴더 목록을 반환한다.
 func (s *Service) Folders(accID string) ([]string, error) {
-	acc, err := s.store.Get(accID)
-	if err != nil {
-		return nil, err
-	}
-	cred, err := s.store.Credential(accID)
+	acc, cred, err := s.credentials(accID)
 	if err != nil {
 		return nil, err
 	}
 	if acc.AuthType == account.AuthOAuth2 {
-		client, err := gmail.New(cred, func(updated string) error {
-			return s.store.Save(acc, updated)
-		})
+		client, err := s.newGmailClient(acc, cred)
 		if err != nil {
 			return nil, err
 		}
@@ -229,17 +162,13 @@ func (s *Service) ListRefresh(accID, folder string) ([]types.Message, error) {
 // ListRefreshPage는 서버에서 지정한 페이지를 조회한다.
 // 첫 페이지는 캐시를 교체하고, 이후 페이지는 ListMore가 기존 캐시에 합친다.
 func (s *Service) ListRefreshPage(accID, folder, pageToken string) (types.MessagePage, error) {
-	acc, err := s.store.Get(accID)
-	if err != nil {
-		return types.MessagePage{}, err
-	}
-	cred, err := s.store.Credential(accID)
+	acc, cred, err := s.credentials(accID)
 	if err != nil {
 		return types.MessagePage{}, err
 	}
 	var page types.MessagePage
 	if acc.AuthType == account.AuthOAuth2 {
-		client, clientErr := gmail.New(cred, func(updated string) error { return s.store.Save(acc, updated) })
+		client, clientErr := s.newGmailClient(acc, cred)
 		if clientErr != nil {
 			return types.MessagePage{}, clientErr
 		}
@@ -301,7 +230,7 @@ func (s *Service) MessageMarkRead(accID, folder, messageID string, uid uint32, r
 		return err
 	}
 	if acc.AuthType == account.AuthOAuth2 {
-		client, err := s.gmailClient(acc, cred, messageID)
+		client, err := s.messageGmailClient(acc, cred, messageID)
 		if err != nil {
 			return err
 		}
@@ -322,7 +251,7 @@ func (s *Service) MessageDelete(accID, folder, messageID string, uid uint32) err
 		return err
 	}
 	if acc.AuthType == account.AuthOAuth2 {
-		client, err := s.gmailClient(acc, cred, messageID)
+		client, err := s.messageGmailClient(acc, cred, messageID)
 		if err != nil {
 			return err
 		}
@@ -335,26 +264,13 @@ func (s *Service) MessageDelete(accID, folder, messageID string, uid uint32) err
 	return s.store.RemoveCached(accID, folder, messageID, uid)
 }
 
-// credentials는 계정 메타데이터와 키체인 자격증명을 함께 조회한다.
-func (s *Service) credentials(accID string) (*account.Account, string, error) {
-	acc, err := s.store.Get(accID)
-	if err != nil {
-		return nil, "", err
-	}
-	cred, err := s.store.Credential(accID)
-	if err != nil {
-		return nil, "", err
-	}
-	return acc, cred, nil
-}
-
-// gmailClient는 OAuth 계정용 Gmail 클라이언트를 만든다.
+// messageGmailClient는 단일 메시지를 다루는 OAuth 계정용 Gmail 클라이언트를 만든다.
 // 이전 버전이 캐시한 메시지에는 원격 ID가 없으므로, 그 경우 새로고침을 안내한다.
-func (s *Service) gmailClient(acc *account.Account, cred, messageID string) (*gmail.Client, error) {
+func (s *Service) messageGmailClient(acc *account.Account, cred, messageID string) (*gmail.Client, error) {
 	if strings.TrimSpace(messageID) == "" {
 		return nil, fmt.Errorf("Gmail 메시지 ID가 없습니다. 목록을 새로고침한 뒤 다시 시도하세요")
 	}
-	return gmail.New(cred, func(updated string) error { return s.store.Save(acc, updated) })
+	return s.newGmailClient(acc, cred)
 }
 
 // AttachmentData는 원문 MIME 메시지에서 첨부파일 바이트를 추출해 Base64로 반환한다.
@@ -366,11 +282,4 @@ func (s *Service) AttachmentData(raw string, index int) (string, error) {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(data), nil
-}
-
-// newID는 16바이트 난수 기반의 계정 ID를 생성한다.
-func newID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }

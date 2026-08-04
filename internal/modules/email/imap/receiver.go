@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"working/internal/modules/email/account"
+	account "working/internal/modules/account/types"
 	"working/internal/modules/email/types"
 
 	"github.com/emersion/go-imap"
@@ -39,7 +39,7 @@ func New() *Receiver { return &Receiver{} }
 
 // Folders는 계정의 모든 폴더(사서함) 이름 목록을 반환한다.
 func (r *Receiver) Folders(acc *account.Account, credential string) ([]string, error) {
-	if acc.IMAP == nil {
+	if acc.IMAPConfig() == nil {
 		return nil, fmt.Errorf("계정에 IMAP 설정이 없습니다: %s", acc.ID)
 	}
 	c, err := r.connect(acc, credential)
@@ -72,7 +72,7 @@ func (r *Receiver) List(acc *account.Account, credential, folder string) ([]type
 // ListPage는 지정한 폴더의 메시지를 한 페이지 조회한다.
 // pageToken은 다음 페이지를 조회할 때 사용할 IMAP sequence number 상한이다.
 func (r *Receiver) ListPage(acc *account.Account, credential, folder, pageToken string) (types.MessagePage, error) {
-	if acc.IMAP == nil {
+	if acc.IMAPConfig() == nil {
 		return types.MessagePage{}, fmt.Errorf("계정에 IMAP 설정이 없습니다: %s", acc.ID)
 	}
 	if folder == "" {
@@ -170,7 +170,7 @@ func (r *Receiver) Delete(acc *account.Account, credential, folder string, uid u
 // openFolder는 IMAP 서버에 연결하고 폴더를 쓰기 가능 모드로 선택한다.
 // 플래그 변경은 읽기 전용 선택에서는 거부되므로 Select의 readOnly를 false로 둔다.
 func (r *Receiver) openFolder(acc *account.Account, credential, folder string, uid uint32) (*client.Client, error) {
-	if acc.IMAP == nil {
+	if acc.IMAPConfig() == nil {
 		return nil, fmt.Errorf("계정에 IMAP 설정이 없습니다: %s", acc.ID)
 	}
 	if uid == 0 {
@@ -199,18 +199,19 @@ func storeFlag(c *client.Client, uid uint32, op imap.FlagsOp, flag string) error
 
 // connect는 IMAP 서버에 연결 후 로그인한다.
 func (r *Receiver) connect(acc *account.Account, credential string) (*client.Client, error) {
-	addr := fmt.Sprintf("%s:%d", acc.IMAP.Host, acc.IMAP.Port)
-	enc := Encryption(strings.ToLower(acc.IMAP.Encryption))
+	server := acc.IMAPConfig()
+	addr := fmt.Sprintf("%s:%d", server.Host, server.Port)
+	enc := Encryption(strings.ToLower(server.Encryption))
 
 	var c *client.Client
 	var err error
 	switch enc {
 	case EncryptionTLS:
-		c, err = client.DialTLS(addr, &tls.Config{ServerName: acc.IMAP.Host})
+		c, err = client.DialTLS(addr, &tls.Config{ServerName: server.Host})
 	case EncryptionStartTLS:
 		c, err = client.Dial(addr)
 		if err == nil {
-			if err = c.StartTLS(&tls.Config{ServerName: acc.IMAP.Host}); err != nil {
+			if err = c.StartTLS(&tls.Config{ServerName: server.Host}); err != nil {
 				c.Close()
 			}
 		}

@@ -6,7 +6,7 @@ import (
 	"net/smtp"
 	"strings"
 
-	"working/internal/modules/email/account"
+	account "working/internal/modules/account/types"
 	"working/internal/modules/email/types"
 )
 
@@ -31,7 +31,8 @@ func New() *Sender { return &Sender{} }
 // Send는 계정의 SMTP 설정과 자격증명을 사용해 메일을 발송한다.
 // msg.Attachments의 Path가 가리키는 로컬 파일을 MIME 첨부파일로 인코딩한다.
 func (s *Sender) Send(acc *account.Account, credential string, msg *types.Message) error {
-	if acc.SMTP == nil {
+	server := acc.SMTPConfig()
+	if server == nil {
 		return fmt.Errorf("계정에 SMTP 설정이 없습니다: %s", acc.ID)
 	}
 	if credential == "" {
@@ -41,8 +42,8 @@ func (s *Sender) Send(acc *account.Account, credential string, msg *types.Messag
 		return fmt.Errorf("메시지가 nil입니다")
 	}
 
-	addr := fmt.Sprintf("%s:%d", acc.SMTP.Host, acc.SMTP.Port)
-	auth := smtp.PlainAuth("", acc.Email, credential, acc.SMTP.Host)
+	addr := fmt.Sprintf("%s:%d", server.Host, server.Port)
+	auth := smtp.PlainAuth("", acc.Email, credential, server.Host)
 
 	from := acc.Email
 	if acc.DisplayName != "" {
@@ -54,13 +55,13 @@ func (s *Sender) Send(acc *account.Account, credential string, msg *types.Messag
 		return err
 	}
 
-	enc := Encryption(strings.ToLower(acc.SMTP.Encryption))
+	enc := Encryption(strings.ToLower(server.Encryption))
 	recipients := recipientsOf(msg)
 	switch enc {
 	case EncryptionTLS:
 		return sendImplicitTLS(addr, auth, acc.Email, recipients, raw)
 	case EncryptionStartTLS:
-		return sendStartTLS(addr, auth, acc.Email, recipients, raw, acc.SMTP.Host)
+		return sendStartTLS(addr, auth, acc.Email, recipients, raw, server.Host)
 	default:
 		return sendPlain(addr, auth, acc.Email, recipients, raw)
 	}

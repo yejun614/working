@@ -16,7 +16,7 @@ import (
 	"golang.org/x/oauth2/google"
 
 	"working/internal/config"
-	"working/internal/modules/email/account"
+	account "working/internal/modules/account/types"
 	"working/internal/modules/email/imap"
 	"working/internal/modules/email/smtp"
 	"working/internal/modules/email/types"

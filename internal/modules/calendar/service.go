@@ -1,7 +1,9 @@
 // Package calendar 은 "working" 앱의 캘린더 모듈 진입점이다.
 //
 // 이 모듈은 로컬 일정 관리와 외부 CalDAV 서버 연동 기능을
-// Wails Service 형태로 프론트엔드에 노출한다.
+// Wails Service 형태로 프론트엔드에 노출한다. 계정과 자격증명은 통합 계정
+// 모듈(internal/modules/account)이 관리하며, 이 모듈은 캘린더 기능이 켜진
+// 계정만 읽어 사용하고 일정 캐시만 직접 보관한다.
 // 다른 모듈과 마찬가지로 internal/modules/<이름> 패키지로 격리되며,
 // main.go에서 원하는 모듈의 Service만 application.NewService로 등록하면
 // 해당 모듈만 앱에 포함된다.
@@ -14,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"working/internal/modules/calendar/account"
+	accountstore "working/internal/modules/account/store"
+	account "working/internal/modules/account/types"
 	"working/internal/modules/calendar/caldav"
-	"working/internal/modules/calendar/provider"
 	"working/internal/modules/calendar/store"
 	"working/internal/modules/calendar/types"
 	kanbanstore "working/internal/modules/kanban/store"
@@ -25,7 +27,8 @@ import (
 // Service는 프론트엔드에 바인딩되는 캘린더 모듈 서비스이다.
 // 모든 메서드는 Wails를 통해 JS/TS에서 호출 가능하다.
 type Service struct {
-	store *store.Store
+	store    *store.Store
+	accounts *accountstore.Store
 }
 
 // NewService는 캘린더 모듈 Service를 생성한다.
@@ -35,114 +38,60 @@ func NewService() (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{store: st}, nil
+	accounts, err := accountstore.New()
+	if err != nil {
+		return nil, err
+	}
+	return &Service{store: st, accounts: accounts}, nil
 }
 
 // ServiceShutdown은 Wails 종료 시 호출되는 훅이다.
 // 현재는 유지할 상태가 없으므로 아무 작업도 하지 않는다.
 func (s *Service) ServiceShutdown() {}
 
-// ProviderList는 사전 정의된 캘린더 서비스 제공자 목록을 반환한다.
-// 프론트엔드에서 계정 추가 시 드롭다운으로 표시하거나,
-// 계정 도메인 자동 인식에 사용한다.
-func (s *Service) ProviderList() []provider.Provider {
-	return provider.All()
-}
-
-// ProviderLookupByEmail은 이메일 주소의 도메인으로 제공자를 찾는다.
-// 일치하는 사전 정의 제공자가 없으면 nil을 반환한다.
-// 프론트엔드에서 사용자 이름 입력 중 CalDAV URL 자동 채우기에 사용한다.
-func (s *Service) ProviderLookupByEmail(email string) *provider.Provider {
-	return provider.LookupByEmail(email)
-}
-
 // newCalDAVClient는 계정 자격증명을 키체인에서 읽어 CalDAV 클라이언트를 만든다.
 // OAuth access token이 갱신되면 동일 계정의 키체인 credential도 갱신한다.
 func (s *Service) newCalDAVClient(acc *account.Account) (*caldav.Client, error) {
-	credential, err := s.store.Credential(acc.ID)
+	credential, err := s.accounts.Credential(acc.ID)
 	if err != nil {
 		return nil, err
 	}
 	return caldav.NewClient(acc, credential, func(updated string) error {
-		return s.store.SaveAccount(acc, updated)
+		return s.accounts.SaveCredential(acc.ID, updated)
 	})
 }
 
-// AccountList는 등록된 모든 캘린더 계정을 반환한다(자격증명 제외).
+// AccountList는 캘린더 기능이 켜진 계정만 반환한다(자격증명 제외).
+// 계정 등록·수정·삭제와 Google 재인증은 통합 계정 모듈이 담당한다.
 func (s *Service) AccountList() ([]account.Account, error) {
-	return s.store.ListAccounts()
+	all, err := s.accounts.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]account.Account, 0, len(all))
+	for _, acc := range all {
+		if acc.UsesCalendar() {
+			out = append(out, acc)
+		}
+	}
+	return out, nil
 }
 
 // AccountGet은 ID로 계정을 조회한다.
 func (s *Service) AccountGet(id string) (*account.Account, error) {
-	return s.store.GetAccount(id)
+	return s.calendarAccount(id)
 }
 
-// AccountCreate는 새 계정을 등록하고 자격증명을 키체인에 저장한다.
-// id는 자동 생성되어 반환된다. CalDAV 계정은 credential(비밀번호/토큰)이 필수.
-// 로컬 계정(SourceLocal)은 credential을 사용하지 않는다.
-func (s *Service) AccountCreate(acc *account.Account, credential string) (string, error) {
-	if acc == nil {
-		return "", fmt.Errorf("계정 정보가 없습니다")
-	}
-	if strings.TrimSpace(acc.Name) == "" {
-		return "", fmt.Errorf("계정 이름은 필수입니다")
-	}
-	if acc.Source == "" {
-		acc.Source = account.SourceLocal
-	}
-	if acc.Source == account.SourceCalDAV {
-		if strings.TrimSpace(acc.CalDAVURL) == "" {
-			return "", fmt.Errorf("CalDAV 서버 URL은 필수입니다")
-		}
-		if strings.TrimSpace(acc.Username) == "" {
-			return "", fmt.Errorf("사용자 이름은 필수입니다")
-		}
-		if credential == "" {
-			return "", fmt.Errorf("비밀번호/토큰은 필수입니다")
-		}
-	}
-	acc.ID = newID()
-	if acc.AuthType == "" {
-		acc.AuthType = account.AuthBasic
-	}
-	if err := s.store.SaveAccount(acc, credential); err != nil {
-		return "", err
-	}
-	return acc.ID, nil
-}
-
-// AccountUpdate는 기존 계정 메타데이터를 갱신한다.
-// credential이 빈 문자열이 아니면 키체인 자격증명도 함께 갱신하고,
-// 빈 문자열이면 기존 자격증명을 유지한다.
-func (s *Service) AccountUpdate(acc *account.Account, credential string) error {
-	if acc == nil || acc.ID == "" {
-		return fmt.Errorf("계정 ID가 필요합니다")
-	}
-	existing, err := s.store.GetAccount(acc.ID)
+// calendarAccount는 캘린더 기능이 켜진 계정을 조회한다.
+func (s *Service) calendarAccount(id string) (*account.Account, error) {
+	acc, err := s.accounts.Get(id)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if acc.Name == "" {
-		acc.Name = existing.Name
+	if !acc.UsesCalendar() {
+		return nil, fmt.Errorf("캘린더를 사용하지 않는 계정입니다: %s", acc.Name)
 	}
-	if acc.Source == "" {
-		acc.Source = existing.Source
-	}
-	if acc.AuthType == "" {
-		acc.AuthType = existing.AuthType
-	}
-	// 계정 정보 수정은 인증 상태와 무관하므로 재인증 안내를 그대로 유지한다.
-	acc.AuthError = existing.AuthError
-	return s.store.SaveAccount(acc, credential)
-}
-
-// AccountDelete는 계정과 키체인 자격증명, 로컬 일정을 함께 삭제한다.
-func (s *Service) AccountDelete(id string) error {
-	if id == "" {
-		return fmt.Errorf("계정 ID가 필요합니다")
-	}
-	return s.store.DeleteAccount(id)
+	return acc, nil
 }
 
 // EventList는 SQLite에 캐시된 접근 가능한 모든 일정을 반환한다.
@@ -150,7 +99,7 @@ func (s *Service) AccountDelete(id string) error {
 // 네트워크를 사용하지 않고 마지막 동기화 스냅샷을 보여준다.
 // from/to가 빈 문자열이면 전체 범위를 조회한다.
 func (s *Service) EventList(from, to string) ([]types.Event, error) {
-	accs, err := s.store.ListAccounts()
+	accs, err := s.AccountList()
 	if err != nil {
 		return nil, err
 	}
@@ -158,13 +107,13 @@ func (s *Service) EventList(from, to string) ([]types.Event, error) {
 	var firstCalDAVError error
 
 	for _, acc := range accs {
-		if acc.Source == account.SourceLocal {
+		if acc.Calendar.Source == account.CalendarSourceLocal {
 			events, err := s.store.EventsByCalendar(acc.ID)
 			if err != nil {
 				return nil, err
 			}
 			all = append(all, events...)
-		} else if acc.Source == account.SourceCalDAV && acc.SyncEnabled {
+		} else if acc.Calendar.Source == account.CalendarSourceCalDAV && acc.Calendar.SyncEnabled {
 			// CalDAV는 새로고침 버튼의 SyncNow가 갱신한 SQLite 캐시만 읽는다.
 			events, err := s.store.EventsByCalendar(acc.ID)
 			if err != nil {
@@ -223,12 +172,8 @@ func kanbanDueEvents() ([]types.Event, error) {
 // EventsByAccount는 단일 계정의 일정만 반환한다.
 // CalDAV 계정은 서버에서, 로컬 계정은 저장소에서 조회한다.
 func (s *Service) EventsByAccount(accID string) ([]types.Event, error) {
-	acc, err := s.store.GetAccount(accID)
-	if err != nil {
+	if _, err := s.calendarAccount(accID); err != nil {
 		return nil, err
-	}
-	if acc.Source == account.SourceCalDAV {
-		return s.store.EventsByCalendar(accID)
 	}
 	return s.store.EventsByCalendar(accID)
 }
@@ -236,12 +181,12 @@ func (s *Service) EventsByAccount(accID string) ([]types.Event, error) {
 // Calendars는 CalDAV 계정의 캘린더(폴더) 목록을 반환한다.
 // 로컬 계정인 경우 기본 캘린더 하나를 반환한다.
 func (s *Service) Calendars(accID string) ([]types.CalendarInfo, error) {
-	acc, err := s.store.GetAccount(accID)
+	acc, err := s.calendarAccount(accID)
 	if err != nil {
 		return nil, err
 	}
-	if acc.Source == account.SourceLocal {
-		return []types.CalendarInfo{{Name: acc.Name, Color: acc.Color}}, nil
+	if acc.Calendar.Source == account.CalendarSourceLocal {
+		return []types.CalendarInfo{{Name: acc.Name, Color: acc.Calendar.Color}}, nil
 	}
 	c, err := s.newCalDAVClient(acc)
 	if err != nil {
@@ -258,7 +203,7 @@ func (s *Service) noteCalDAVError(acc *account.Account, err error) error {
 	if err == nil {
 		if acc.AuthError != "" {
 			acc.AuthError = ""
-			_ = s.store.SaveAccount(acc, "")
+			_ = s.accounts.Save(acc, "")
 		}
 		return nil
 	}
@@ -267,7 +212,7 @@ func (s *Service) noteCalDAVError(acc *account.Account, err error) error {
 	}
 	if acc.AuthError != err.Error() {
 		acc.AuthError = err.Error()
-		_ = s.store.SaveAccount(acc, "")
+		_ = s.accounts.Save(acc, "")
 	}
 	return fmt.Errorf("Google 계정 인증이 만료되어 재인증이 필요합니다: %w", err)
 }
@@ -287,18 +232,18 @@ func (s *Service) EventCreate(ev *types.Event) (*types.Event, error) {
 	if ev.UID == "" {
 		ev.UID = newID()
 	}
-	acc, err := s.store.GetAccount(ev.CalendarID)
+	acc, err := s.calendarAccount(ev.CalendarID)
 	if err != nil {
 		return nil, err
 	}
-	if acc.Source == account.SourceCalDAV {
+	if acc.Calendar.Source == account.CalendarSourceCalDAV {
 		c, err := s.newCalDAVClient(acc)
 		if err != nil {
 			return nil, err
 		}
 		// 기본 캘린더 URL을 사용(첫 번째 캘린더).
 		cals, _ := c.Calendars()
-		calURL := acc.CalDAVURL
+		calURL := acc.Calendar.URL
 		if len(cals) > 0 {
 			calURL = cals[0].Href
 		}
@@ -317,17 +262,17 @@ func (s *Service) EventUpdate(ev *types.Event) (*types.Event, error) {
 	if ev == nil || ev.UID == "" {
 		return nil, fmt.Errorf("일정 UID가 필요합니다")
 	}
-	acc, err := s.store.GetAccount(ev.CalendarID)
+	acc, err := s.calendarAccount(ev.CalendarID)
 	if err != nil {
 		return nil, err
 	}
-	if acc.Source == account.SourceCalDAV {
+	if acc.Calendar.Source == account.CalendarSourceCalDAV {
 		c, err := s.newCalDAVClient(acc)
 		if err != nil {
 			return nil, err
 		}
 		cals, _ := c.Calendars()
-		calURL := acc.CalDAVURL
+		calURL := acc.Calendar.URL
 		if len(cals) > 0 {
 			calURL = cals[0].Href
 		}
@@ -342,17 +287,17 @@ func (s *Service) EventUpdate(ev *types.Event) (*types.Event, error) {
 
 // EventDelete는 일정을 삭제한다.
 func (s *Service) EventDelete(calendarID, uid string) error {
-	acc, err := s.store.GetAccount(calendarID)
+	acc, err := s.calendarAccount(calendarID)
 	if err != nil {
 		return err
 	}
-	if acc.Source == account.SourceCalDAV {
+	if acc.Calendar.Source == account.CalendarSourceCalDAV {
 		c, err := s.newCalDAVClient(acc)
 		if err != nil {
 			return err
 		}
 		cals, _ := c.Calendars()
-		calURL := acc.CalDAVURL
+		calURL := acc.Calendar.URL
 		if len(cals) > 0 {
 			calURL = cals[0].Href
 		}
@@ -365,11 +310,11 @@ func (s *Service) EventDelete(calendarID, uid string) error {
 // SyncNow는 CalDAV 계정의 일정을 즉시 동기화한다.
 // 동기화 성공 시 계정의 LastSyncAt을 갱신한다.
 func (s *Service) SyncNow(accID string) error {
-	acc, err := s.store.GetAccount(accID)
+	acc, err := s.calendarAccount(accID)
 	if err != nil {
 		return err
 	}
-	if acc.Source != account.SourceCalDAV {
+	if acc.Calendar.Source != account.CalendarSourceCalDAV {
 		return fmt.Errorf("로컬 계정은 동기화 대상이 아닙니다")
 	}
 	events, err := s.caldavEvents(acc)
@@ -379,10 +324,10 @@ func (s *Service) SyncNow(accID string) error {
 	if err := s.store.ReplaceEvents(acc.ID, events); err != nil {
 		return err
 	}
-	acc.LastSyncAt = time.Now().UTC().Format(time.RFC3339)
+	acc.Calendar.LastSyncAt = time.Now().UTC().Format(time.RFC3339)
 	// 동기화에 성공했으므로 남아 있던 재인증 안내를 해제한다.
 	acc.AuthError = ""
-	return s.store.SaveAccount(acc, "")
+	return s.accounts.Save(acc, "")
 }
 
 // caldavEvents는 CalDAV 서버에서 모든 캘린더의 일정을 조회해 합친다.

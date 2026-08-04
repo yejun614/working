@@ -2,18 +2,12 @@ package store
 
 import (
 	"database/sql"
-	"fmt"
-	"sort"
 
-	"github.com/zalando/go-keyring"
-	"working/internal/config"
-	"working/internal/modules/email/account"
 	"working/internal/modules/email/types"
 	"working/internal/storage"
 )
 
-const accountsKey = "email.accounts"
-
+// cachedMessages는 폴더 하나의 메시지 캐시 스냅샷이다.
 type cachedMessages struct {
 	AccountID     string          `json:"accountId"`
 	Folder        string          `json:"folder"`
@@ -22,9 +16,10 @@ type cachedMessages struct {
 	UpdatedAt     string          `json:"updatedAt"`
 }
 
+// Store는 이메일 모듈의 메시지 캐시를 보관한다.
+// 계정과 키체인 자격증명은 통합 계정 모듈(internal/modules/account)이 관리한다.
 type Store struct {
-	db             *sql.DB
-	keyringService string
+	db *sql.DB
 }
 
 func New() (*Store, error) {
@@ -32,98 +27,9 @@ func New() (*Store, error) {
 	if e != nil {
 		return nil, e
 	}
-	return &Store{db: db, keyringService: config.AppName + ".email"}, nil
+	return &Store{db: db}, nil
 }
-func (s *Store) load() ([]account.Account, error) {
-	var v []account.Account
-	found, e := storage.GetJSON(s.db, accountsKey, &v)
-	if e != nil {
-		return nil, e
-	}
-	if !found {
-		var old []account.Account
-		if ok, x := storage.LegacyJSON(mustDir(), "email_accounts.json", &old); x != nil {
-			return nil, x
-		} else if ok {
-			v = old
-			if e = s.save(v); e != nil {
-				return nil, e
-			}
-		}
-	}
-	if v == nil {
-		v = []account.Account{}
-	}
-	return v, nil
-}
-func mustDir() string                           { d, _ := config.Dir(); return d }
-func (s *Store) save(v []account.Account) error { return storage.PutJSON(s.db, accountsKey, v) }
-func (s *Store) List() ([]account.Account, error) {
-	v, e := s.load()
-	sort.Slice(v, func(i, j int) bool { return v[i].ID < v[j].ID })
-	return v, e
-}
-func (s *Store) Get(id string) (*account.Account, error) {
-	v, e := s.load()
-	if e != nil {
-		return nil, e
-	}
-	for i := range v {
-		if v[i].ID == id {
-			return &v[i], nil
-		}
-	}
-	return nil, fmt.Errorf("계정을 찾을 수 없습니다: %s", id)
-}
-func (s *Store) Save(a *account.Account, c string) error {
-	v, e := s.load()
-	if e != nil {
-		return e
-	}
-	found := false
-	for i := range v {
-		if v[i].ID == a.ID {
-			v[i] = *a
-			found = true
-		}
-	}
-	if !found {
-		v = append(v, *a)
-	}
-	if c != "" {
-		if e = keyring.Set(s.keyringService, a.ID, c); e != nil {
-			return fmt.Errorf("키체인 저장 실패: %w", e)
-		}
-	}
-	return s.save(v)
-}
-func (s *Store) Delete(id string) error {
-	v, e := s.load()
-	if e != nil {
-		return e
-	}
-	kept := v[:0]
-	for _, a := range v {
-		if a.ID != id {
-			kept = append(kept, a)
-		}
-	}
-	if e = s.save(kept); e != nil {
-		return e
-	}
-	_ = keyring.Delete(s.keyringService, id)
-	return nil
-}
-func (s *Store) Credential(id string) (string, error) {
-	v, e := keyring.Get(s.keyringService, id)
-	if e == keyring.ErrNotFound {
-		return "", fmt.Errorf("자격증명이 키체인에 없습니다: %s", id)
-	}
-	if e != nil {
-		return "", fmt.Errorf("키체인 조회 실패: %w", e)
-	}
-	return v, nil
-}
+
 func cacheKey(acc, folder string) string { return "email.messages." + acc + "." + folder }
 
 // Cached는 네트워크를 호출하지 않고 SQLite에 저장된 목록과 본문을 반환한다.

@@ -19,7 +19,7 @@ import (
 	"golang.org/x/oauth2/google"
 
 	"working/internal/config"
-	"working/internal/modules/calendar/account"
+	account "working/internal/modules/account/types"
 	"working/internal/modules/calendar/ical"
 	"working/internal/modules/calendar/types"
 )
@@ -45,8 +45,8 @@ type Client struct {
 // NewClient는 CalDAV 클라이언트를 생성한다.
 func NewClient(acc *account.Account, credential string, onTokenRefresh ...func(string) error) (*Client, error) {
 	c := &Client{
-		url:        strings.TrimRight(acc.CalDAVURL, "/"),
-		username:   acc.Username,
+		url:        strings.TrimRight(calendarURL(acc), "/"),
+		username:   acc.CalendarUsername(),
 		password:   credential,
 		authType:   acc.AuthType,
 		httpClient: &http.Client{},
@@ -74,9 +74,18 @@ func NewClient(acc *account.Account, credential string, onTokenRefresh ...func(s
 			},
 		}
 		c.httpClient = oauth2.NewClient(context.Background(), source)
-		c.url = googleCalDAVURL(c.url, acc.Username)
+		c.url = googleCalDAVURL(c.url, acc.CalendarUsername())
 	}
 	return c, nil
+}
+
+// calendarURL은 계정의 CalDAV 서버 URL을 반환한다.
+// 캘린더 설정이 없는 계정은 CalDAV를 사용하지 않으므로 빈 문자열이다.
+func calendarURL(acc *account.Account) string {
+	if acc.Calendar == nil {
+		return ""
+	}
+	return acc.Calendar.URL
 }
 
 // savingTokenSource는 OAuth 토큰이 갱신되었을 때 키체인 저장 콜백을 실행한다.

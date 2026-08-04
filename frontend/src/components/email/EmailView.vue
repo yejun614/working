@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { Service as EmailService } from '../../../bindings/working/internal/modules/email'
-import type { Account } from '../../../bindings/working/internal/modules/email/account/models'
+import type { Account } from '../../../bindings/working/internal/modules/account/types/models'
 import type { Message } from '../../../bindings/working/internal/modules/email/types/models'
-import AccountForm from './AccountForm.vue'
 import ComposeForm from './ComposeForm.vue'
 import { isDarkMode } from '../../theme'
+import { canSendMail } from '../../accounts'
 
 const accounts = ref<Account[]>([])
 const selectedAccountId = ref<string>('')
@@ -31,8 +31,6 @@ let messageLoadRequest = 0
 const startupAutoRefreshKey = 'app-startup-auto-refresh:email'
 let startupAutoRefreshAttempted = sessionStorage.getItem(startupAutoRefreshKey) === '1'
 
-const showAccountForm = ref(false)
-const editingAccount = ref<Account | null>(null)
 const showCompose = ref(false)
 const composeDraft = ref<Message | null>(null)
 const replyTarget = ref<Message | null>(null)
@@ -42,7 +40,7 @@ const LOCAL_DRAFTS_KEY = 'working.email.local-drafts'
 const selectedAccount = computed(() =>
   accounts.value.find(a => a.id === selectedAccountId.value) || null
 )
-const canSend = computed(() => accounts.value.some(account => account.smtp))
+const canSend = computed(() => accounts.value.some(canSendMail))
 // 현재 폴더에서 읽지 않은 메일 수. 목록 헤더에 배지로 표시한다.
 const unreadCount = computed(() => messages.value.filter(m => m.unread).length)
 
@@ -340,33 +338,6 @@ async function copyRaw() {
   }
 }
 
-function openNewAccount() {
-  editingAccount.value = null
-  showAccountForm.value = true
-}
-
-function openEditAccount(acc: Account) {
-  editingAccount.value = acc
-  showAccountForm.value = true
-}
-
-async function deleteAccount(acc: Account) {
-  if (!confirm(`계정 "${acc.name || acc.email}" 을(를) 삭제할까요? 키체인 자격증명도 함께 삭제됩니다.`)) return
-  try {
-    await EmailService.AccountDelete(acc.id)
-    setInfo('계정이 삭제되었습니다.')
-    await refreshAccounts()
-  } catch (e) {
-    setError((e as Error).message)
-  }
-}
-
-async function onAccountSaved() {
-  showAccountForm.value = false
-  await refreshAccounts()
-  setInfo('계정이 저장되었습니다.')
-}
-
 function openCompose() {
   composeDraft.value = null
   replyTarget.value = null
@@ -493,7 +464,6 @@ onMounted(() => {
       <div class="account-section">
         <div class="section-title">
           <span>계정</span>
-          <button class="icon-btn" title="계정 추가" @click="openNewAccount">+</button>
         </div>
         <ul class="account-list">
           <li
@@ -504,14 +474,11 @@ onMounted(() => {
           >
             <div class="account-row">
               <div class="account-name">{{ a.name || a.email }}</div>
-              <div class="account-actions">
-                <button class="icon-btn sm" title="편집" @click.stop="openEditAccount(a)">✎</button>
-                <button class="icon-btn sm danger" title="삭제" @click.stop="deleteAccount(a)">✕</button>
-              </div>
+              <span v-if="a.authError" class="auth-warning" :title="a.authError">⚠</span>
             </div>
             <div class="account-email">{{ a.email }}</div>
           </li>
-          <li v-if="accounts.length === 0" class="empty">등록된 계정이 없습니다</li>
+          <li v-if="accounts.length === 0" class="empty">계정 탭에서 계정을 추가하세요</li>
         </ul>
       </div>
 
@@ -600,7 +567,7 @@ onMounted(() => {
         <div class="detail-actions">
           <button
             class="btn primary"
-            :disabled="!selectedAccount?.smtp"
+            :disabled="!canSendMail(selectedAccount)"
             @click="openReply"
           >답장 작성</button>
           <button class="btn" @click="showRaw = !showRaw">
@@ -662,13 +629,6 @@ onMounted(() => {
         <pre v-else class="body">{{ selectedMessage.body }}</pre>
       </article>
     </section>
-
-    <AccountForm
-      v-if="showAccountForm"
-      :account="editingAccount"
-      @close="showAccountForm = false"
-      @saved="onAccountSaved"
-    />
   </div>
 </template>
 
@@ -737,13 +697,7 @@ onMounted(() => {
   font-size: 11px;
   color: var(--muted);
 }
-.account-actions {
-  display: none;
-  gap: 4px;
-}
-.account-list li:hover .account-actions {
-  display: flex;
-}
+.auth-warning { flex-shrink: 0; color: #ffc65c; font-size: 12px; cursor: help; }
 .empty {
   color: var(--muted);
   font-style: italic;

@@ -44,7 +44,7 @@ export function Create(acc: types$0.Account | null, credential: string): $Cancel
 
 /**
  * Delete는 계정과 키체인 자격증명을 함께 삭제한다.
- * 해당 계정의 메일 캐시와 일정 캐시는 각 모듈이 계정을 찾지 못하면 사용하지 않는다.
+ * 계정이 사라지면 각 모듈이 더는 읽지 않지만, 남은 일정 캐시는 직접 정리한다.
  */
 export function Delete(id: string): $CancellablePromise<void> {
     return $Call.ByID(2432204280, id);

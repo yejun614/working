@@ -110,6 +110,22 @@ func (a Account) UsesMail() bool { return a.Mail != nil }
 // UsesCalendar는 이 계정이 캘린더 모듈에서 사용되는지 여부이다.
 func (a Account) UsesCalendar() bool { return a.Calendar != nil }
 
+// SMTPConfig는 발송 서버 설정을 반환한다. 메일을 사용하지 않으면 nil이다.
+func (a Account) SMTPConfig() *ServerConfig {
+	if a.Mail == nil {
+		return nil
+	}
+	return a.Mail.SMTP
+}
+
+// IMAPConfig는 수신 서버 설정을 반환한다. 메일을 사용하지 않으면 nil이다.
+func (a Account) IMAPConfig() *ServerConfig {
+	if a.Mail == nil {
+		return nil
+	}
+	return a.Mail.IMAP
+}
+
 // CalendarUsername은 CalDAV 로그인에 사용할 사용자 이름을 반환한다.
 // 캘린더 설정에 값이 없으면 계정 이메일로 대체한다.
 func (a Account) CalendarUsername() string {

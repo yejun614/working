@@ -13,51 +13,24 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as account$0 from "./account/models.js";
+import * as types$0 from "../account/types/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as provider$0 from "./provider/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as types$0 from "./types/models.js";
-
-/**
- * AccountCreate는 새 계정을 등록하고 자격증명을 키체인에 저장한다.
- * id는 자동 생성되어 반환된다. credential은 빈 문자열이면 안 된다.
- */
-export function AccountCreate(acc: account$0.Account | null, credential: string): $CancellablePromise<string> {
-    return $Call.ByID(3332929661, acc, credential);
-}
-
-/**
- * AccountDelete는 계정과 키체인 자격증명을 함께 삭제한다.
- * 메타데이터가 이미 없더라도 키체인 잔여물은 제거를 시도한다.
- */
-export function AccountDelete(id: string): $CancellablePromise<void> {
-    return $Call.ByID(2234678890, id);
-}
+import * as types$1 from "./types/models.js";
 
 /**
  * AccountGet은 ID로 계정을 조회한다.
  */
-export function AccountGet(id: string): $CancellablePromise<account$0.Account | null> {
+export function AccountGet(id: string): $CancellablePromise<types$0.Account | null> {
     return $Call.ByID(4147542775, id);
 }
 
 /**
- * AccountList는 등록된 모든 계정을 반환한다(자격증명 제외).
+ * AccountList는 메일 기능이 켜진 계정만 반환한다(자격증명 제외).
+ * 계정 등록·수정·삭제는 통합 계정 모듈이 담당한다.
  */
-export function AccountList(): $CancellablePromise<account$0.Account[] | null> {
+export function AccountList(): $CancellablePromise<types$0.Account[] | null> {
     return $Call.ByID(1205119905);
-}
-
-/**
- * AccountUpdate는 기존 계정 메타데이터를 갱신한다.
- * credential이 빈 문자열이 아니면 키체인 자격증명도 함께 갱신하고,
- * 빈 문자열이면 기존 자격증명을 유지한다.
- */
-export function AccountUpdate(acc: account$0.Account | null, credential: string): $CancellablePromise<void> {
-    return $Call.ByID(2612896404, acc, credential);
 }
 
 /**
@@ -77,24 +50,16 @@ export function Folders(accID: string): $CancellablePromise<string[] | null> {
 }
 
 /**
- * GoogleOAuthConnect는 Gmail API 사용을 위한 Google OAuth 인증을 수행하고 계정을 저장한다.
- * Calendar와 동일한 Google Client ID를 사용하며, Gmail 읽기/수정/발송 scope를 요청한다.
- */
-export function GoogleOAuthConnect(acc: account$0.Account | null): $CancellablePromise<string> {
-    return $Call.ByID(3055166614, acc);
-}
-
-/**
  * List는 네트워크를 호출하지 않고 SQLite 캐시에서 목록과 본문을 읽는다.
  */
-export function List(accID: string, folder: string): $CancellablePromise<types$0.Message[] | null> {
+export function List(accID: string, folder: string): $CancellablePromise<types$1.Message[] | null> {
     return $Call.ByID(1288993830, accID, folder);
 }
 
 /**
  * ListMore는 현재 캐시에 서버의 다음 페이지를 추가하고 중복 메시지는 제거한다.
  */
-export function ListMore(accID: string, folder: string, pageToken: string): $CancellablePromise<types$0.MessagePage> {
+export function ListMore(accID: string, folder: string, pageToken: string): $CancellablePromise<types$1.MessagePage> {
     return $Call.ByID(3413442055, accID, folder, pageToken);
 }
 
@@ -102,7 +67,7 @@ export function ListMore(accID: string, folder: string, pageToken: string): $Can
  * ListRefresh는 사용자가 명시적으로 새로고침했을 때만 메일 서버를 조회하고,
  * 반환된 목록과 본문을 SQLite 캐시에 저장한다.
  */
-export function ListRefresh(accID: string, folder: string): $CancellablePromise<types$0.Message[] | null> {
+export function ListRefresh(accID: string, folder: string): $CancellablePromise<types$1.Message[] | null> {
     return $Call.ByID(3233957613, accID, folder);
 }
 
@@ -110,7 +75,7 @@ export function ListRefresh(accID: string, folder: string): $CancellablePromise<
  * ListRefreshPage는 서버에서 지정한 페이지를 조회한다.
  * 첫 페이지는 캐시를 교체하고, 이후 페이지는 ListMore가 기존 캐시에 합친다.
  */
-export function ListRefreshPage(accID: string, folder: string, pageToken: string): $CancellablePromise<types$0.MessagePage> {
+export function ListRefreshPage(accID: string, folder: string, pageToken: string): $CancellablePromise<types$1.MessagePage> {
     return $Call.ByID(4200415102, accID, folder, pageToken);
 }
 
@@ -134,32 +99,14 @@ export function MessageMarkRead(accID: string, folder: string, messageID: string
 /**
  * Page는 네트워크를 호출하지 않고 캐시된 목록과 다음 페이지 커서를 반환한다.
  */
-export function Page(accID: string, folder: string): $CancellablePromise<types$0.MessagePage> {
+export function Page(accID: string, folder: string): $CancellablePromise<types$1.MessagePage> {
     return $Call.ByID(1910736881, accID, folder);
-}
-
-/**
- * ProviderList는 사전 정의된 이메일 제공자 목록을 반환한다.
- * 프론트엔드에서 계정 추가 시 드롭다운으로 표시하거나,
- * 이메일 도메인 자동 인식에 사용한다.
- */
-export function ProviderList(): $CancellablePromise<provider$0.Provider[] | null> {
-    return $Call.ByID(2481272719);
-}
-
-/**
- * ProviderLookupByEmail은 이메일 주소의 도메인으로 제공자를 찾는다.
- * 일치하는 사전 정의 제공자가 없으면 nil을 반환한다.
- * 프론트엔드에서 이메일 입력 중 서버 필드 자동 채우기에 사용한다.
- */
-export function ProviderLookupByEmail(email: string): $CancellablePromise<provider$0.Provider | null> {
-    return $Call.ByID(874965208, email);
 }
 
 /**
  * Send는 지정한 계정으로 메일을 발송한다.
  * accID로 계정을 조회하고, 키체인에서 자격증명을 꺼내 SMTP 전송에 사용한다.
  */
-export function Send(accID: string, msg: types$0.Message | null): $CancellablePromise<void> {
+export function Send(accID: string, msg: types$1.Message | null): $CancellablePromise<void> {
     return $Call.ByID(3861516648, accID, msg);
 }

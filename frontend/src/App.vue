@@ -3,9 +3,10 @@ import { ref } from 'vue'
 import EmailView from './components/email/EmailView.vue'
 import CalendarView from './components/calendar/CalendarView.vue'
 import KanbanView from './components/kanban/KanbanView.vue'
+import AccountsView from './components/account/AccountsView.vue'
 import { applyTheme, isDarkMode } from './theme'
 
-const activeModule = ref<'email' | 'calendar' | 'kanban'>('calendar')
+const activeModule = ref<'email' | 'calendar' | 'kanban' | 'account'>('calendar')
 const showSettings = ref(false)
 </script>
 
@@ -24,6 +25,10 @@ const showSettings = ref(false)
         :class="{ active: activeModule === 'kanban' }"
         @click="activeModule = 'kanban'"
       >칸반</button>
+      <button
+        :class="{ active: activeModule === 'account' }"
+        @click="activeModule = 'account'"
+      >계정</button>
       <button class="settings-button" @click="showSettings = !showSettings">⚙ 설정</button>
     </nav>
     <section v-if="showSettings" class="settings-panel" aria-label="앱 설정">
@@ -37,6 +42,7 @@ const showSettings = ref(false)
       <CalendarView v-show="activeModule === 'calendar'" />
       <EmailView v-show="activeModule === 'email'" />
       <KanbanView v-show="activeModule === 'kanban'" />
+      <AccountsView v-if="activeModule === 'account'" />
     </main>
   </div>
 </template>

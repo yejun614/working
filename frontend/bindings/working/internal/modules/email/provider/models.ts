@@ -3,7 +3,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as account$0 from "../account/models.js";
+import * as types$0 from "../../account/types/models.js";
 
 /**
  * Provider는 단일 이메일 서비스 제공자의 메타데이터와 서버 설정을 나타낸다.
@@ -39,10 +39,10 @@ export interface Provider {
     /**
      * SMTP는 발송 서버 설정. nil이면 발송 미지원 제공자.
      */
-    "smtp"?: account$0.ServerConfig | null;
+    "smtp"?: types$0.ServerConfig | null;
 
     /**
      * IMAP은 수신 서버 설정. nil이면 수신 미지원 제공자.
      */
-    "imap"?: account$0.ServerConfig | null;
+    "imap"?: types$0.ServerConfig | null;
 }

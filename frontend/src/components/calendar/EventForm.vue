@@ -2,7 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { Service as CalendarService } from '../../../bindings/working/internal/modules/calendar'
 import type { Event } from '../../../bindings/working/internal/modules/calendar/types/models'
-import type { Account } from '../../../bindings/working/internal/modules/calendar/account/models'
+import type { Account } from '../../../bindings/working/internal/modules/account/types/models'
 
 const props = defineProps<{
   accounts: Account[]

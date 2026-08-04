@@ -17,6 +17,7 @@ import (
 	"working/internal/modules/account/store"
 	"working/internal/modules/account/types"
 	calendarprovider "working/internal/modules/calendar/provider"
+	calendarstore "working/internal/modules/calendar/store"
 	mailprovider "working/internal/modules/email/provider"
 )
 
@@ -96,12 +97,18 @@ func (s *Service) Update(acc *types.Account, credential string) error {
 }
 
 // Delete는 계정과 키체인 자격증명을 함께 삭제한다.
-// 해당 계정의 메일 캐시와 일정 캐시는 각 모듈이 계정을 찾지 못하면 사용하지 않는다.
+// 계정이 사라지면 각 모듈이 더는 읽지 않지만, 남은 일정 캐시는 직접 정리한다.
 func (s *Service) Delete(id string) error {
 	if id == "" {
 		return fmt.Errorf("계정 ID가 필요합니다")
 	}
-	return s.store.Delete(id)
+	if err := s.store.Delete(id); err != nil {
+		return err
+	}
+	if events, err := calendarstore.New(); err == nil {
+		_ = events.DeleteCalendarEvents(id)
+	}
+	return nil
 }
 
 // GoogleConnect는 Google OAuth 인증을 수행하고 계정을 저장한다.
