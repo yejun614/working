@@ -56,6 +56,15 @@ const unreadCount = computed(() => messages.value.filter(m => m.unread).length)
 
 const selectedMessages = computed(() => messages.value.filter(m => selectedKeys.value.has(messageKey(m))))
 const allSelected = computed(() => messages.value.length > 0 && selectedKeys.value.size === messages.value.length)
+// 일괄 처리 막대는 "지금 읽고 있는 메일 하나"보다 넓게 골랐을 때만 띄운다.
+// 메일을 열어 보기만 한 상태에서는 상세 화면 버튼으로 충분하므로, 좁은 목록
+// 칸을 계속 차지하지 않는다. Ctrl 클릭으로 하나만 고른 경우에는 띄운다.
+const hasBulkSelection = computed(() => {
+  if (selectedKeys.value.size >= 2) return true
+  if (selectedKeys.value.size !== 1) return false
+  const open = selectedMessage.value
+  return !open || !selectedKeys.value.has(messageKey(open))
+})
 // 로컬 임시보관함은 서버가 없으므로 삭제만 지원한다.
 const isLocalDrafts = computed(() => selectedFolder.value === LOCAL_DRAFT_FOLDER)
 // 옮길 수 있는 폴더. 현재 폴더와 로컬 임시보관함은 뺀다.
@@ -321,17 +330,44 @@ function dropFromList(targets: Message[]) {
   if (selectedMessage.value && keys.has(messageKey(selectedMessage.value))) selectedMessage.value = null
 }
 
-function toggleSelection(m: Message, index: number, shiftKey: boolean) {
-  const next = new Set(selectedKeys.value)
-  // Shift 클릭은 직전에 누른 항목부터 지금 항목까지를 한 번에 선택한다.
-  if (shiftKey && lastToggledIndex >= 0 && lastToggledIndex < messages.value.length) {
-    const [from, to] = [Math.min(lastToggledIndex, index), Math.max(lastToggledIndex, index)]
-    for (let i = from; i <= to; i++) next.add(messageKey(messages.value[i]))
-  } else {
-    const key = messageKey(m)
-    if (next.has(key)) next.delete(key)
-    else next.add(key)
+// 목록 항목 클릭. 파일 탐색기와 같은 규칙을 따른다.
+// 그냥 클릭하면 그 메일만 선택하고 본문을 열고, Ctrl(⌘) 클릭은 선택을
+// 토글하며, Shift 클릭은 기준점부터 지금 항목까지를 선택한다.
+// 보조키를 누른 클릭은 본문을 열지 않아 실수로 읽음 처리되지 않게 한다.
+function onRowClick(m: Message, index: number, event: MouseEvent) {
+  if (event.shiftKey) {
+    selectRange(index)
+    return
   }
+  if (event.ctrlKey || event.metaKey) {
+    toggleOne(m, index)
+    return
+  }
+  selectedKeys.value = new Set([messageKey(m)])
+  lastToggledIndex = index
+  selectMessage(m)
+}
+
+// Shift 클릭이 행에 걸친 텍스트 선택을 만들지 않도록 막는다.
+function onRowMouseDown(event: MouseEvent) {
+  if (event.shiftKey) event.preventDefault()
+}
+
+function selectRange(index: number) {
+  const anchor = lastToggledIndex >= 0 && lastToggledIndex < messages.value.length ? lastToggledIndex : index
+  const from = Math.min(anchor, index)
+  const to = Math.max(anchor, index)
+  const next = new Set<string>()
+  for (let i = from; i <= to; i++) next.add(messageKey(messages.value[i]))
+  selectedKeys.value = next
+  // 기준점은 그대로 두어 Shift 클릭을 반복하며 범위를 넓히거나 줄일 수 있게 한다.
+}
+
+function toggleOne(m: Message, index: number) {
+  const next = new Set(selectedKeys.value)
+  const key = messageKey(m)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
   selectedKeys.value = next
   lastToggledIndex = index
 }
@@ -592,25 +628,20 @@ onMounted(() => {
 
     <section class="list-pane">
       <div class="list-header">
-        <label class="select-all" :title="allSelected ? '전체 선택 해제' : '전체 선택'">
-          <input
-            type="checkbox"
-            :checked="allSelected"
-            :disabled="!messages.length"
-            @change="toggleSelectAll"
-          />
-        </label>
         <div class="list-title">
           {{ selectedFolder }}
           <span v-if="unreadCount" class="unread-badge" :title="`읽지 않은 메일 ${unreadCount}개`">{{ unreadCount }}</span>
         </div>
         <div class="list-actions">
-          <button class="btn" @click="refreshMessages" :disabled="!selectedAccountId || loadingList">새로고침</button>
-          <button class="btn primary" @click="openCompose" :disabled="!canSend">메일 쓰기</button>
+          <button class="btn sm" :disabled="!messages.length" @click="toggleSelectAll">
+            {{ allSelected ? '전체 해제' : '전체 선택' }}
+          </button>
+          <button class="btn sm" @click="refreshMessages" :disabled="!selectedAccountId || loadingList">새로고침</button>
+          <button class="btn sm primary" @click="openCompose" :disabled="!canSend">메일 쓰기</button>
         </div>
       </div>
 
-      <div v-if="selectedKeys.size" class="bulk-bar">
+      <div v-if="hasBulkSelection" class="bulk-bar">
         <span class="bulk-count">{{ selectedKeys.size }}개 선택</span>
         <template v-if="!isLocalDrafts">
           <button class="btn sm" :disabled="bulkRunning" @click="bulkMarkRead(true)">읽음</button>
@@ -644,17 +675,12 @@ onMounted(() => {
           <li
             v-for="(m, index) in messages"
             :key="messageKey(m)"
-            :class="{ unread: m.unread, selected: selectedMessage?.uid === m.uid, checked: selectedKeys.has(messageKey(m)) }"
-            @click="selectMessage(m)"
+            :class="{ unread: m.unread, selected: selectedMessage?.uid === m.uid, picked: selectedKeys.has(messageKey(m)) }"
+            :aria-selected="selectedKeys.has(messageKey(m))"
+            @mousedown="onRowMouseDown"
+            @click="onRowClick(m, index, $event)"
           >
             <div class="msg-row">
-              <input
-                class="msg-check"
-                type="checkbox"
-                :checked="selectedKeys.has(messageKey(m))"
-                :aria-label="`${m.subject || '(제목 없음)'} 선택`"
-                @click.stop="toggleSelection(m, index, ($event as MouseEvent).shiftKey)"
-              />
               <span class="unread-dot" :class="{ hidden: !m.unread }" aria-hidden="true"></span>
               <div class="msg-from">{{ m.from }}</div>
               <button
@@ -861,15 +887,14 @@ onMounted(() => {
 .list-pane { border-right: 1px solid var(--border); }
 .list-header {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
 .list-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-weight: 600; }
-.select-all { display: flex; align-items: center; flex-shrink: 0; }
-.select-all input, .msg-check { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
-.msg-check { flex: 0 0 auto; }
 .bulk-bar {
   display: flex;
   align-items: center;
@@ -957,7 +982,10 @@ onMounted(() => {
 }
 .message-list li:hover { background: var(--panel-2); }
 .message-list li.selected { background: var(--panel-2); border-left: 3px solid var(--accent); padding-left: 13px; }
-.message-list li.checked { background: rgba(79, 124, 255, 0.1); }
+/* 다중 선택 표시. 지금 열어 둔 메일(.selected)과 겹쳐도 자연스럽게 보이도록
+   왼쪽 강조선은 .selected가 맡고 배경만 칠한다. */
+.message-list li.picked { background: rgba(79, 124, 255, 0.16); }
+.message-list li.picked:hover { background: rgba(79, 124, 255, 0.22); }
 .message-list li.unread .msg-subject { font-weight: 700; }
 .message-list li.unread .msg-from { color: var(--text); font-weight: 600; }
 .msg-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
