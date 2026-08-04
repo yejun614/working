@@ -801,6 +801,9 @@ onMounted(() => {
 }
 .message-list { list-style: none; margin: 0; padding: 0; min-width: 0; width: 100%; overflow: hidden; }
 .message-list li {
+  /* 읽음 상태를 알리는 .sr-only가 position:absolute라, 여기서 컨테이닝 블록을
+     잡아 주지 않으면 목록 밖으로 빠져나가 화면 전체에 스크롤을 만든다. */
+  position: relative;
   min-width: 0;
   overflow: hidden;
   padding: 10px 16px;

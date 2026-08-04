@@ -104,6 +104,9 @@ button {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  /* 스크롤은 각 모듈이 자기 영역 안에서만 처리한다. 앱 껍데기가 스크롤되면
+     100vh 아래로 배경이 드러나므로 여기서 막는다. */
+  overflow: hidden;
 }
 .tab-bar {
   display: flex;
