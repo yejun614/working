@@ -44,6 +44,19 @@ func Open() (*sql.DB, error) {
 	return db, nil
 }
 
+// Close는 공유 SQLite 연결을 닫는다.
+// 다음 Open이 다시 연결하므로, 데이터 디렉터리를 바꾸거나 정리할 때 사용한다.
+func Close() error {
+	openMu.Lock()
+	defer openMu.Unlock()
+	if shared == nil {
+		return nil
+	}
+	err := shared.Close()
+	shared, sharedPath = nil, ""
+	return err
+}
+
 // GetJSON은 키-값 저장소에서 JSON을 읽는다. 데이터가 없으면 found=false다.
 func GetJSON(db *sql.DB, key string, out any) (found bool, err error) {
 	var raw []byte

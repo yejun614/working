@@ -248,7 +248,10 @@ func (s *Service) EventCreate(ev *types.Event) (*types.Event, error) {
 			calURL = cals[0].Href
 		}
 		created, err := c.CreateEvent(calURL, ev)
-		return created, s.noteCalDAVError(acc, err)
+		if err := s.noteCalDAVError(acc, err); err != nil {
+			return nil, err
+		}
+		return created, s.cacheRemoteEvent(acc, calURL, created)
 	}
 	if err := s.store.SaveEvent(ev); err != nil {
 		return nil, err
@@ -277,7 +280,10 @@ func (s *Service) EventUpdate(ev *types.Event) (*types.Event, error) {
 			calURL = cals[0].Href
 		}
 		updated, err := c.UpdateEvent(calURL, ev)
-		return updated, s.noteCalDAVError(acc, err)
+		if err := s.noteCalDAVError(acc, err); err != nil {
+			return nil, err
+		}
+		return updated, s.cacheRemoteEvent(acc, calURL, updated)
 	}
 	if err := s.store.SaveEvent(ev); err != nil {
 		return nil, err
@@ -302,9 +308,35 @@ func (s *Service) EventDelete(calendarID, uid string) error {
 			calURL = cals[0].Href
 		}
 		ev := &types.Event{UID: uid, CalendarID: calendarID}
-		return s.noteCalDAVError(acc, c.DeleteEvent(calURL, ev))
+		// 서버가 만든 일정은 파일명이 UID와 다를 수 있으므로 캐시에 기록된 원격 주소를 쓴다.
+		if cached, cacheErr := s.store.EventsByCalendar(calendarID); cacheErr == nil {
+			for _, item := range cached {
+				if item.UID == uid {
+					ev.Href = item.Href
+					ev.ETag = item.ETag
+					break
+				}
+			}
+		}
+		if err := s.noteCalDAVError(acc, c.DeleteEvent(calURL, ev)); err != nil {
+			return err
+		}
 	}
 	return s.store.DeleteEvent(calendarID, uid)
+}
+
+// cacheRemoteEvent는 CalDAV 서버에 반영된 일정을 로컬 캐시에도 저장한다.
+// EventList는 캐시만 읽으므로, 이 단계가 없으면 다음 SyncNow 전까지
+// 방금 추가하거나 수정한 일정이 화면에 나타나지 않는다.
+func (s *Service) cacheRemoteEvent(acc *account.Account, calendarURL string, ev *types.Event) error {
+	if ev == nil {
+		return nil
+	}
+	ev.CalendarID = acc.ID
+	if ev.CalendarHref == "" {
+		ev.CalendarHref = calendarURL
+	}
+	return s.store.SaveEvent(ev)
 }
 
 // SyncNow는 CalDAV 계정의 일정을 즉시 동기화한다.
