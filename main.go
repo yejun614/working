@@ -7,6 +7,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"working/internal/config"
+	accountmod "working/internal/modules/account"
 	calendarmod "working/internal/modules/calendar"
 	emailmod "working/internal/modules/email"
 	kanbanmod "working/internal/modules/kanban"
@@ -23,6 +24,12 @@ var assets embed.FS
 func main() {
 	if err := config.LoadEnv(); err != nil {
 		log.Fatalf("환경변수 초기화 실패: %v", err)
+	}
+
+	// 계정 모듈이 먼저 초기화되면서 모듈별로 나뉘어 있던 기존 계정을 한 번 이관한다.
+	accountService, err := accountmod.NewService()
+	if err != nil {
+		log.Fatalf("계정 모듈 초기화 실패: %v", err)
 	}
 
 	emailService, err := emailmod.NewService()
@@ -44,6 +51,7 @@ func main() {
 		Name:        "working",
 		Description: "업무 보조 프로그램 - 모듈식 확장",
 		Services: []application.Service{
+			application.NewService(accountService),
 			application.NewService(emailService),
 			application.NewService(calendarService),
 			application.NewService(kanbanService),
