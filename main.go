@@ -9,6 +9,7 @@ import (
 	"working/internal/config"
 	accountmod "working/internal/modules/account"
 	calendarmod "working/internal/modules/calendar"
+	clockmod "working/internal/modules/clock"
 	documentmod "working/internal/modules/document"
 	emailmod "working/internal/modules/email"
 	kanbanmod "working/internal/modules/kanban"
@@ -53,6 +54,11 @@ func main() {
 		log.Fatalf("문서 모듈 초기화 실패: %v", err)
 	}
 
+	clockService, err := clockmod.NewService()
+	if err != nil {
+		log.Fatalf("시계 모듈 초기화 실패: %v", err)
+	}
+
 	app := application.New(application.Options{
 		Name:        "working",
 		Description: "업무 보조 프로그램 - 모듈식 확장",
@@ -62,6 +68,7 @@ func main() {
 			application.NewService(calendarService),
 			application.NewService(kanbanService),
 			application.NewService(documentService),
+			application.NewService(clockService),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
