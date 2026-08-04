@@ -119,6 +119,15 @@ export function GoogleOAuthConnect(acc: account$0.Account | null): $CancellableP
 }
 
 /**
+ * GoogleOAuthReconnect는 토큰이 만료·철회된 기존 Google 계정을 다시 인증한다.
+ * 계정 설정은 그대로 두고 키체인의 토큰만 새로 발급받아 교체하며,
+ * 성공하면 계정에 기록된 재인증 안내를 해제한다.
+ */
+export function GoogleOAuthReconnect(accID: string): $CancellablePromise<void> {
+    return $Call.ByID(4162656893, accID);
+}
+
+/**
  * ProviderList는 사전 정의된 캘린더 서비스 제공자 목록을 반환한다.
  * 프론트엔드에서 계정 추가 시 드롭다운으로 표시하거나,
  * 계정 도메인 자동 인식에 사용한다.

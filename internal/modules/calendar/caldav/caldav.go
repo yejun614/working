@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -474,6 +475,33 @@ func (c *Client) requestWithDepth(method, url string, body []byte, contentType, 
 		req.Header.Set("Depth", depth)
 	}
 	return c.httpClient.Do(req)
+}
+
+// authErrorCodes는 재인증 없이는 복구할 수 없는 OAuth 오류 코드이다.
+// invalid_grant는 refresh token이 만료되었거나 사용자가 접근 권한을 철회한 경우다.
+var authErrorCodes = map[string]bool{
+	"invalid_grant":       true,
+	"invalid_client":      true,
+	"unauthorized_client": true,
+}
+
+// IsAuthError는 OAuth 토큰이 만료·철회되어 재인증이 필요한 오류인지 판별한다.
+// oauth2 토큰 갱신 실패는 http.Client.Do가 *url.Error로 감싸 반환하므로 errors.As로
+// 원인을 찾고, 중간에 타입 정보가 사라진 경우를 대비해 메시지도 함께 확인한다.
+func IsAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var retrieveErr *oauth2.RetrieveError
+	if errors.As(err, &retrieveErr) {
+		if authErrorCodes[retrieveErr.ErrorCode] {
+			return true
+		}
+		if retrieveErr.Response != nil && retrieveErr.Response.StatusCode == http.StatusUnauthorized {
+			return true
+		}
+	}
+	return strings.Contains(err.Error(), "invalid_grant")
 }
 
 // responseError는 외부 DAV 서버가 반환한 상태 코드와 오류 본문을 함께 보존한다.

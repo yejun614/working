@@ -45,6 +45,29 @@ const selectedAccount = computed(() =>
   accounts.value.find(a => a.id === selectedAccountId.value) || null
 )
 
+// OAuth 토큰이 만료·철회되어 재인증이 필요한 계정. 백엔드가 계정에 사유를 기록한다.
+const reauthAccounts = computed(() => accounts.value.filter(a => !!a.authError))
+const reconnectingAccountId = ref('')
+
+// Google 재인증을 다시 수행한다. 기본 브라우저에서 Google 로그인 창이 열리고,
+// 인증이 끝나면 키체인의 토큰만 교체된 뒤 동기화까지 이어서 진행한다.
+async function reconnectAccount(acc: Account) {
+  if (reconnectingAccountId.value) return
+  reconnectingAccountId.value = acc.id
+  try {
+    await CalendarService.GoogleOAuthReconnect(acc.id)
+    await CalendarService.SyncNow(acc.id)
+    await refreshAccounts()
+    await loadEvents()
+    setInfo(`"${acc.name}" 계정을 다시 인증했습니다.`)
+  } catch (e) {
+    setError((e as Error).message)
+    await refreshAccounts()
+  } finally {
+    reconnectingAccountId.value = ''
+  }
+}
+
 function tuiCalendarId(calendar: DisplayCalendar): string {
   return calendarKey(calendar.accountId, { href: calendar.href })
 }
@@ -371,6 +394,8 @@ async function refreshAccounts() {
       }
     }))
     calendarsByAccount.value = nextCalendars
+    // Calendars 호출 중 인증 만료가 기록될 수 있으므로 계정을 다시 읽어 안내 상태를 반영한다.
+    accounts.value = (await CalendarService.AccountList()) || accounts.value
     if (!selectedAccountId.value && accounts.value.length > 0) {
       selectedAccountId.value = accounts.value[0].id
     }
@@ -405,6 +430,8 @@ async function loadEvents() {
     await autoRefreshEmptyCacheOnce()
   } catch (e) {
     setError((e as Error).message)
+    // 시작 시 자동 동기화가 인증 만료로 실패했을 수 있어 재인증 안내 상태를 다시 읽는다.
+    await refreshAccounts()
   } finally {
     loading.value = false
   }
@@ -481,6 +508,8 @@ async function syncAccount(acc: Account) {
     await loadEvents()
   } catch (e) {
     setError((e as Error).message)
+    // 인증 만료로 실패했을 수 있으므로 계정을 다시 읽어 재인증 안내를 띄운다.
+    await refreshAccounts()
   }
 }
 
@@ -572,7 +601,15 @@ onBeforeUnmount(() => {
             <div class="account-row">
               <span class="color-dot" :style="{ background: a.color || '#4f7cff' }"></span>
               <div class="account-name">{{ a.name }}</div>
+              <span v-if="a.authError" class="auth-warning" :title="a.authError">⚠</span>
               <div class="account-actions">
+                <button
+                  v-if="a.authError"
+                  class="icon-btn sm warning"
+                  title="Google 재인증"
+                  :disabled="!!reconnectingAccountId"
+                  @click.stop="reconnectAccount(a)"
+                >⟳</button>
                 <button v-if="a.source === 'caldav'" class="icon-btn sm" title="동기화" @click.stop="syncAccount(a)">↻</button>
                 <button class="icon-btn sm" title="편집" @click.stop="openEditAccount(a)">✎</button>
                 <button class="icon-btn sm danger" title="삭제" @click.stop="deleteAccount(a)">✕</button>
@@ -602,6 +639,23 @@ onBeforeUnmount(() => {
     </aside>
 
     <section class="calendar-pane">
+      <div v-if="reauthAccounts.length" class="alert reauth" role="alert">
+        <div class="reauth-text">
+          <strong>Google 계정 인증이 만료되었습니다</strong>
+          <span>토큰이 만료되었거나 접근 권한이 철회되어 일정을 동기화할 수 없습니다. 재인증을 누르면 브라우저에서 Google 로그인 창이 열립니다.</span>
+        </div>
+        <div class="reauth-actions">
+          <button
+            v-for="a in reauthAccounts"
+            :key="a.id"
+            class="btn sm primary"
+            type="button"
+            :title="a.authError"
+            :disabled="!!reconnectingAccountId"
+            @click="reconnectAccount(a)"
+          >{{ reconnectingAccountId === a.id ? '인증 중…' : `${a.name} 재인증` }}</button>
+        </div>
+      </div>
       <div v-if="error" class="alert error">
         <span class="alert-message">{{ error }}</span>
         <button class="btn sm alert-copy" type="button" @click="copyError">오류 복사</button>
@@ -814,6 +868,22 @@ onBeforeUnmount(() => {
 .alert-copy { flex-shrink: 0; }
 .copy-status { flex-shrink: 0; font-size: 11px; opacity: 0.85; }
 .alert.info { background: rgba(56,211,159,0.12); color: var(--ok); }
+.alert.reauth {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(255,198,92,0.14);
+  color: #ffc65c;
+  border: 1px solid rgba(255,198,92,0.35);
+}
+.reauth-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.reauth-text span { color: var(--muted); font-size: 12px; }
+.reauth-actions { display: flex; flex-shrink: 0; flex-wrap: wrap; gap: 6px; }
+.auth-warning { flex-shrink: 0; color: #ffc65c; font-size: 12px; cursor: help; }
+.icon-btn.warning { color: #ffc65c; border-color: rgba(255,198,92,0.5); }
+.icon-btn.warning:hover:not(:disabled) { background: rgba(255,198,92,0.14); }
+.icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .tui-calendar-host {
   flex: 1;

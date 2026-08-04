@@ -54,4 +54,9 @@ type Account struct {
 
 	// LastSyncAt은 마지막 동기화 시각(RFC3339).
 	LastSyncAt string `json:"lastSyncAt,omitempty"`
+
+	// AuthError는 재인증이 필요한 마지막 인증 실패 사유이다.
+	// OAuth 토큰이 만료·철회되면 기록되고, 재인증이나 정상 호출 성공 시 비워진다.
+	// 값이 비어 있지 않으면 프론트엔드가 재인증 안내와 버튼을 표시한다.
+	AuthError string `json:"authError,omitempty"`
 }

@@ -132,6 +132,8 @@ func (s *Service) AccountUpdate(acc *account.Account, credential string) error {
 	if acc.AuthType == "" {
 		acc.AuthType = existing.AuthType
 	}
+	// 계정 정보 수정은 인증 상태와 무관하므로 재인증 안내를 그대로 유지한다.
+	acc.AuthError = existing.AuthError
 	return s.store.SaveAccount(acc, credential)
 }
 
@@ -245,7 +247,29 @@ func (s *Service) Calendars(accID string) ([]types.CalendarInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.Calendars()
+	cals, err := c.Calendars()
+	return cals, s.noteCalDAVError(acc, err)
+}
+
+// noteCalDAVError는 CalDAV 호출 결과를 계정의 인증 상태에 반영한다.
+// 재인증이 필요한 오류이면 계정에 사유를 기록해 프론트엔드가 안내와 재인증 버튼을
+// 띄울 수 있게 하고, 호출이 성공하면 남아 있던 안내를 해제한다.
+func (s *Service) noteCalDAVError(acc *account.Account, err error) error {
+	if err == nil {
+		if acc.AuthError != "" {
+			acc.AuthError = ""
+			_ = s.store.SaveAccount(acc, "")
+		}
+		return nil
+	}
+	if !caldav.IsAuthError(err) {
+		return err
+	}
+	if acc.AuthError != err.Error() {
+		acc.AuthError = err.Error()
+		_ = s.store.SaveAccount(acc, "")
+	}
+	return fmt.Errorf("Google 계정 인증이 만료되어 재인증이 필요합니다: %w", err)
 }
 
 // EventCreate은 새 일정을 생성한다.
@@ -278,7 +302,8 @@ func (s *Service) EventCreate(ev *types.Event) (*types.Event, error) {
 		if len(cals) > 0 {
 			calURL = cals[0].Href
 		}
-		return c.CreateEvent(calURL, ev)
+		created, err := c.CreateEvent(calURL, ev)
+		return created, s.noteCalDAVError(acc, err)
 	}
 	if err := s.store.SaveEvent(ev); err != nil {
 		return nil, err
@@ -306,7 +331,8 @@ func (s *Service) EventUpdate(ev *types.Event) (*types.Event, error) {
 		if len(cals) > 0 {
 			calURL = cals[0].Href
 		}
-		return c.UpdateEvent(calURL, ev)
+		updated, err := c.UpdateEvent(calURL, ev)
+		return updated, s.noteCalDAVError(acc, err)
 	}
 	if err := s.store.SaveEvent(ev); err != nil {
 		return nil, err
@@ -331,7 +357,7 @@ func (s *Service) EventDelete(calendarID, uid string) error {
 			calURL = cals[0].Href
 		}
 		ev := &types.Event{UID: uid, CalendarID: calendarID}
-		return c.DeleteEvent(calURL, ev)
+		return s.noteCalDAVError(acc, c.DeleteEvent(calURL, ev))
 	}
 	return s.store.DeleteEvent(calendarID, uid)
 }
@@ -348,12 +374,14 @@ func (s *Service) SyncNow(accID string) error {
 	}
 	events, err := s.caldavEvents(acc)
 	if err != nil {
-		return err
+		return s.noteCalDAVError(acc, err)
 	}
 	if err := s.store.ReplaceEvents(acc.ID, events); err != nil {
 		return err
 	}
 	acc.LastSyncAt = time.Now().UTC().Format(time.RFC3339)
+	// 동기화에 성공했으므로 남아 있던 재인증 안내를 해제한다.
+	acc.AuthError = ""
 	return s.store.SaveAccount(acc, "")
 }
 
