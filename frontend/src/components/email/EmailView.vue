@@ -6,6 +6,7 @@ import type { Message } from '../../../bindings/working/internal/modules/email/t
 import ComposeForm from './ComposeForm.vue'
 import { isDarkMode } from '../../theme'
 import { canSendMail } from '../../accounts'
+import { copyText } from '../../clipboard'
 
 const accounts = ref<Account[]>([])
 const selectedAccountId = ref<string>('')
@@ -22,6 +23,9 @@ const error = ref<string>('')
 const info = ref<string>('')
 const showRaw = ref(false)
 const copyingRaw = ref(false)
+// 오류 알림 옆에 잠깐 표시하는 복사 결과 문구.
+const copyStatus = ref('')
+let copyStatusTimer: ReturnType<typeof setTimeout> | undefined
 
 // 폴더를 빠르게 전환할 때 먼저 시작한 요청이 늦게 도착해
 // 현재 폴더의 목록을 덮어쓰지 않도록 요청 순번을 관리한다.
@@ -317,25 +321,27 @@ async function copyRaw() {
 
   copyingRaw.value = true
   try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(raw)
-    } else {
-      const textarea = document.createElement('textarea')
-      textarea.value = raw
-      textarea.style.position = 'fixed'
-      textarea.style.opacity = '0'
-      document.body.appendChild(textarea)
-      textarea.focus()
-      textarea.select()
-      if (!document.execCommand('copy')) throw new Error('클립보드 복사 명령이 거부되었습니다.')
-      textarea.remove()
-    }
+    await copyText(raw)
     setInfo('이메일 원문을 클립보드에 복사했습니다.')
   } catch (e) {
     setError(`이메일 원문 복사에 실패했습니다: ${(e as Error).message}`)
   } finally {
     copyingRaw.value = false
   }
+}
+
+// 오류 메시지를 클립보드에 복사한다. 서버 응답 원문이 길어 화면에서
+// 선택하기 어려우므로 알림 옆 버튼으로 한 번에 복사할 수 있게 한다.
+async function copyError() {
+  if (!error.value) return
+  try {
+    await copyText(error.value)
+    copyStatus.value = '복사됨'
+  } catch {
+    copyStatus.value = '복사 실패'
+  }
+  if (copyStatusTimer) clearTimeout(copyStatusTimer)
+  copyStatusTimer = setTimeout(() => { copyStatus.value = '' }, 2500)
 }
 
 function openCompose() {
@@ -370,10 +376,12 @@ async function onSent() {
 function setError(msg: string) {
   error.value = msg
   info.value = ''
+  copyStatus.value = ''
 }
 function setInfo(msg: string) {
   info.value = msg
   error.value = ''
+  copyStatus.value = ''
   setTimeout(() => { if (info.value === msg) info.value = '' }, 3500)
 }
 
@@ -507,7 +515,11 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="error" class="alert error">{{ error }}</div>
+      <div v-if="error" class="alert error">
+        <span class="alert-message">{{ error }}</span>
+        <button class="btn sm alert-copy" type="button" @click="copyError">오류 복사</button>
+        <span v-if="copyStatus" class="copy-status" role="status">{{ copyStatus }}</span>
+      </div>
       <div v-if="info" class="alert info">{{ info }}</div>
 
       <div class="list-body">
@@ -758,6 +770,7 @@ onMounted(() => {
   border-color: var(--accent);
 }
 .btn.primary:hover { background: var(--accent-hover); }
+.btn.sm { padding: 3px 8px; font-size: 12px; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.danger-btn { color: var(--danger); }
 .btn.danger-btn:hover:not(:disabled) { background: rgba(255,90,106,0.12); border-color: var(--danger); }
@@ -768,7 +781,16 @@ onMounted(() => {
   border-radius: 6px;
   font-size: 13px;
 }
-.alert.error { background: rgba(255,90,106,0.12); color: var(--danger); }
+.alert.error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: rgba(255,90,106,0.12);
+  color: var(--danger);
+}
+.alert-message { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.alert-copy { flex-shrink: 0; }
+.copy-status { flex-shrink: 0; align-self: center; font-size: 11px; opacity: 0.85; }
 .alert.info { background: rgba(56,211,159,0.12); color: var(--ok); }
 
 .list-body, .detail-pane { flex: 1; overflow: auto; }
