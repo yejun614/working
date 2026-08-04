@@ -55,16 +55,16 @@ func (s *Store) CachePage(acc, folder string, page types.MessagePage) error {
 	return storage.PutJSON(s.db, cacheKey(acc, folder), cachedMessages{AccountID: acc, Folder: folder, Messages: page.Messages, NextPageToken: page.NextPageToken})
 }
 
-// SetCachedUnread는 캐시된 메시지의 읽음 상태를 갱신한다.
+// SetCachedUnread는 캐시된 메시지들의 읽음 상태를 갱신한다.
 // 메일 서버 반영이 끝난 뒤 호출해, 새로고침 없이도 목록 표시가 서버와 일치하게 한다.
-func (s *Store) SetCachedUnread(acc, folder, id string, uid uint32, unread bool) error {
+func (s *Store) SetCachedUnread(acc, folder string, refs []types.MessageRef, unread bool) error {
 	page, found, e := s.CachedPage(acc, folder)
 	if e != nil || !found {
 		return e
 	}
 	changed := false
 	for i := range page.Messages {
-		if matchMessage(page.Messages[i], id, uid) && page.Messages[i].Unread != unread {
+		if matchAny(page.Messages[i], refs) && page.Messages[i].Unread != unread {
 			page.Messages[i].Unread = unread
 			changed = true
 		}
@@ -75,15 +75,15 @@ func (s *Store) SetCachedUnread(acc, folder, id string, uid uint32, unread bool)
 	return s.CachePage(acc, folder, page)
 }
 
-// RemoveCached는 삭제된 메시지를 캐시에서 제거한다.
-func (s *Store) RemoveCached(acc, folder, id string, uid uint32) error {
+// RemoveCached는 삭제하거나 다른 폴더로 옮긴 메시지를 캐시에서 제거한다.
+func (s *Store) RemoveCached(acc, folder string, refs []types.MessageRef) error {
 	page, found, e := s.CachedPage(acc, folder)
 	if e != nil || !found {
 		return e
 	}
 	kept := make([]types.Message, 0, len(page.Messages))
 	for _, m := range page.Messages {
-		if !matchMessage(m, id, uid) {
+		if !matchAny(m, refs) {
 			kept = append(kept, m)
 		}
 	}
@@ -92,6 +92,16 @@ func (s *Store) RemoveCached(acc, folder, id string, uid uint32) error {
 	}
 	page.Messages = kept
 	return s.CachePage(acc, folder, page)
+}
+
+// matchAny는 캐시된 메시지가 대상 목록에 포함되는지 확인한다.
+func matchAny(m types.Message, refs []types.MessageRef) bool {
+	for _, ref := range refs {
+		if matchMessage(m, ref.ID, ref.UID) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchMessage는 원격 메시지 ID 또는 IMAP UID로 캐시된 메시지를 식별한다.

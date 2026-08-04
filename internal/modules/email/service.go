@@ -221,54 +221,108 @@ func (s *Service) ListMore(accID, folder, pageToken string) (types.MessagePage, 
 	return page, nil
 }
 
-// MessageMarkRead는 메일 서버의 읽음 상태를 변경하고 SQLite 캐시에도 반영한다.
+// MessagesMarkRead는 선택한 메일들의 읽음 상태를 한 번에 변경하고 캐시에도 반영한다.
 // Gmail 계정은 UNREAD 라벨을, IMAP 계정은 \Seen 플래그를 사용한다.
-// messageID는 Gmail 원격 메시지 ID이며 IMAP 계정에서는 비어 있고 uid로 식별한다.
-func (s *Service) MessageMarkRead(accID, folder, messageID string, uid uint32, read bool) error {
+func (s *Service) MessagesMarkRead(accID, folder string, refs []types.MessageRef, read bool) error {
 	acc, cred, err := s.credentials(accID)
 	if err != nil {
 		return err
 	}
+	if len(refs) == 0 {
+		return fmt.Errorf("선택한 메일이 없습니다")
+	}
 	if acc.AuthType == account.AuthOAuth2 {
-		client, err := s.messageGmailClient(acc, cred, messageID)
+		client, err := s.messageGmailClient(acc, cred, refs)
 		if err != nil {
 			return err
 		}
-		if err := client.SetUnread(messageID, !read); err != nil {
-			return err
+		for _, ref := range refs {
+			if err := client.SetUnread(ref.ID, !read); err != nil {
+				return err
+			}
 		}
-	} else if err := s.receiver.SetSeen(acc, cred, folder, uid, read); err != nil {
+	} else if err := s.receiver.SetSeen(acc, cred, folder, uidsOf(refs), read); err != nil {
 		return err
 	}
-	return s.store.SetCachedUnread(accID, folder, messageID, uid, !read)
+	return s.store.SetCachedUnread(accID, folder, refs, !read)
 }
 
-// MessageDelete는 메일 서버에서 메일을 삭제하고 캐시에서도 제거한다.
+// MessagesDelete는 선택한 메일들을 삭제하고 캐시에서도 제거한다.
 // Gmail 계정은 휴지통으로 이동하고, IMAP 계정은 \Deleted 플래그 후 EXPUNGE로 폴더에서 지운다.
-func (s *Service) MessageDelete(accID, folder, messageID string, uid uint32) error {
+func (s *Service) MessagesDelete(accID, folder string, refs []types.MessageRef) error {
 	acc, cred, err := s.credentials(accID)
 	if err != nil {
 		return err
 	}
+	if len(refs) == 0 {
+		return fmt.Errorf("선택한 메일이 없습니다")
+	}
 	if acc.AuthType == account.AuthOAuth2 {
-		client, err := s.messageGmailClient(acc, cred, messageID)
+		client, err := s.messageGmailClient(acc, cred, refs)
 		if err != nil {
 			return err
 		}
-		if err := client.Trash(messageID); err != nil {
-			return err
+		for _, ref := range refs {
+			if err := client.Trash(ref.ID); err != nil {
+				return err
+			}
 		}
-	} else if err := s.receiver.Delete(acc, cred, folder, uid); err != nil {
+	} else if err := s.receiver.Delete(acc, cred, folder, uidsOf(refs)); err != nil {
 		return err
 	}
-	return s.store.RemoveCached(accID, folder, messageID, uid)
+	return s.store.RemoveCached(accID, folder, refs)
 }
 
-// messageGmailClient는 단일 메시지를 다루는 OAuth 계정용 Gmail 클라이언트를 만든다.
+// MessagesMove는 선택한 메일들을 다른 폴더로 옮기고 원래 폴더 캐시에서 제거한다.
+// Gmail 계정은 폴더 대신 라벨을 바꾼다. 옮긴 폴더의 캐시는 그 폴더를 새로고침할 때 채워진다.
+func (s *Service) MessagesMove(accID, folder, targetFolder string, refs []types.MessageRef) error {
+	acc, cred, err := s.credentials(accID)
+	if err != nil {
+		return err
+	}
+	if len(refs) == 0 {
+		return fmt.Errorf("선택한 메일이 없습니다")
+	}
+	if strings.TrimSpace(targetFolder) == "" {
+		return fmt.Errorf("옮길 폴더를 지정해야 합니다")
+	}
+	if targetFolder == folder {
+		return fmt.Errorf("같은 폴더로는 옮길 수 없습니다")
+	}
+	if acc.AuthType == account.AuthOAuth2 {
+		client, err := s.messageGmailClient(acc, cred, refs)
+		if err != nil {
+			return err
+		}
+		ids := make([]string, 0, len(refs))
+		for _, ref := range refs {
+			ids = append(ids, ref.ID)
+		}
+		if err := client.MoveMany(ids, folder, targetFolder); err != nil {
+			return err
+		}
+	} else if err := s.receiver.Move(acc, cred, folder, targetFolder, uidsOf(refs)); err != nil {
+		return err
+	}
+	return s.store.RemoveCached(accID, folder, refs)
+}
+
+// uidsOf는 IMAP 명령에 쓸 UID만 추려낸다.
+func uidsOf(refs []types.MessageRef) []uint32 {
+	out := make([]uint32, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, ref.UID)
+	}
+	return out
+}
+
+// messageGmailClient는 메시지를 다루는 OAuth 계정용 Gmail 클라이언트를 만든다.
 // 이전 버전이 캐시한 메시지에는 원격 ID가 없으므로, 그 경우 새로고침을 안내한다.
-func (s *Service) messageGmailClient(acc *account.Account, cred, messageID string) (*gmail.Client, error) {
-	if strings.TrimSpace(messageID) == "" {
-		return nil, fmt.Errorf("Gmail 메시지 ID가 없습니다. 목록을 새로고침한 뒤 다시 시도하세요")
+func (s *Service) messageGmailClient(acc *account.Account, cred string, refs []types.MessageRef) (*gmail.Client, error) {
+	for _, ref := range refs {
+		if strings.TrimSpace(ref.ID) == "" {
+			return nil, fmt.Errorf("Gmail 메시지 ID가 없습니다. 목록을 새로고침한 뒤 다시 시도하세요")
+		}
 	}
 	return s.newGmailClient(acc, cred)
 }

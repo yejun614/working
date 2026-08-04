@@ -4,5 +4,6 @@
 export type {
     Attachment,
     Message,
-    MessagePage
+    MessagePage,
+    MessageRef
 } from "./models.js";

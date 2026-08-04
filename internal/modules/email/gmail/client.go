@@ -219,6 +219,49 @@ func (c *Client) SetUnread(id string, unread bool) error {
 	return c.post("/messages/"+url.PathEscape(id)+"/modify", payload, nil)
 }
 
+// MoveMany는 메시지들의 라벨을 바꿔 다른 폴더(라벨)로 옮긴다.
+// Gmail은 폴더 대신 라벨을 쓰므로 현재 라벨을 떼고 대상 라벨을 붙인다.
+// 라벨 ID는 한 번만 조회해 메시지 수만큼 반복 조회하지 않는다.
+func (c *Client) MoveMany(ids []string, fromFolder, toFolder string) error {
+	if strings.TrimSpace(toFolder) == "" {
+		return fmt.Errorf("옮길 폴더를 지정해야 합니다")
+	}
+	labels, err := c.labels()
+	if err != nil {
+		return err
+	}
+	toID := resolveLabelID(labels, toFolder)
+	fromID := resolveLabelID(labels, fromFolder)
+
+	payload := struct {
+		AddLabelIDs    []string `json:"addLabelIds,omitempty"`
+		RemoveLabelIDs []string `json:"removeLabelIds,omitempty"`
+	}{AddLabelIDs: []string{toID}}
+	if fromID != "" && fromID != toID {
+		payload.RemoveLabelIDs = []string{fromID}
+	}
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			return fmt.Errorf("Gmail 메시지 ID가 필요합니다")
+		}
+		if err := c.post("/messages/"+url.PathEscape(id)+"/modify", payload, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveLabelID는 라벨 이름 또는 ID를 라벨 ID로 바꾼다.
+// 목록에 없으면 입력값을 그대로 돌려준다.
+func resolveLabelID(labels []label, name string) string {
+	for _, item := range labels {
+		if item.Name == name || item.ID == name {
+			return item.ID
+		}
+	}
+	return name
+}
+
 // Trash는 Gmail 메시지를 휴지통으로 옮긴다.
 // messages.delete는 복구가 불가능하므로 사용하지 않고, 웹 Gmail과 동일하게 휴지통으로 보낸다.
 func (c *Client) Trash(id string) error {

@@ -103,3 +103,19 @@ export interface MessagePage {
     "messages": Message[] | null;
     "nextPageToken"?: string;
 }
+
+/**
+ * MessageRef는 일괄 처리할 메시지를 가리키는 최소 식별자이다.
+ * Gmail은 원격 메시지 ID를, IMAP은 UID를 사용한다.
+ */
+export interface MessageRef {
+    /**
+     * ID는 Gmail 원격 메시지 식별자. IMAP 계정에서는 비어 있다.
+     */
+    "id"?: string;
+
+    /**
+     * UID는 IMAP 메시지 식별자.
+     */
+    "uid"?: number;
+}

@@ -46,6 +46,16 @@ type Message struct {
 	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
+// MessageRef는 일괄 처리할 메시지를 가리키는 최소 식별자이다.
+// Gmail은 원격 메시지 ID를, IMAP은 UID를 사용한다.
+type MessageRef struct {
+	// ID는 Gmail 원격 메시지 식별자. IMAP 계정에서는 비어 있다.
+	ID string `json:"id,omitempty"`
+
+	// UID는 IMAP 메시지 식별자.
+	UID uint32 `json:"uid,omitempty"`
+}
+
 // MessagePage는 이메일 목록의 한 페이지와 다음 페이지 커서이다.
 // 커서가 비어 있으면 현재 폴더의 모든 메시지를 불러온 것이다.
 type MessagePage struct {

@@ -2,7 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { Service as EmailService } from '../../../bindings/working/internal/modules/email'
 import type { Account } from '../../../bindings/working/internal/modules/account/types/models'
-import type { Message } from '../../../bindings/working/internal/modules/email/types/models'
+import type { Message, MessageRef } from '../../../bindings/working/internal/modules/email/types/models'
 import ComposeForm from './ComposeForm.vue'
 import { isDarkMode } from '../../theme'
 import { canSendMail } from '../../accounts'
@@ -18,6 +18,12 @@ const selectedMessage = ref<Message | null>(null)
 const loadingList = ref(false)
 const loadingMore = ref(false)
 const deletingMessage = ref(false)
+// 일괄 처리를 위해 선택한 메일. messageKey 값을 담는다.
+const selectedKeys = ref<Set<string>>(new Set())
+const bulkRunning = ref(false)
+const moveTarget = ref('')
+// Shift 클릭으로 범위를 선택하기 위한 직전 클릭 위치.
+let lastToggledIndex = -1
 const nextPageToken = ref('')
 const error = ref<string>('')
 const info = ref<string>('')
@@ -47,6 +53,15 @@ const selectedAccount = computed(() =>
 const canSend = computed(() => accounts.value.some(canSendMail))
 // 현재 폴더에서 읽지 않은 메일 수. 목록 헤더에 배지로 표시한다.
 const unreadCount = computed(() => messages.value.filter(m => m.unread).length)
+
+const selectedMessages = computed(() => messages.value.filter(m => selectedKeys.value.has(messageKey(m))))
+const allSelected = computed(() => messages.value.length > 0 && selectedKeys.value.size === messages.value.length)
+// 로컬 임시보관함은 서버가 없으므로 삭제만 지원한다.
+const isLocalDrafts = computed(() => selectedFolder.value === LOCAL_DRAFT_FOLDER)
+// 옮길 수 있는 폴더. 현재 폴더와 로컬 임시보관함은 뺀다.
+const moveTargets = computed(() =>
+  folders.value.filter(folder => folder !== selectedFolder.value && folder !== LOCAL_DRAFT_FOLDER)
+)
 
 const sanitizedBodyHTML = computed(() =>
   sanitizeHTML(selectedMessage.value?.html || '')
@@ -103,6 +118,7 @@ async function refreshAccounts() {
 async function onAccountChanged() {
   folders.value = [LOCAL_DRAFT_FOLDER]
   messages.value = []
+  clearSelection()
   nextPageToken.value = ''
   selectedMessage.value = null
   if (!selectedAccountId.value) return
@@ -120,6 +136,7 @@ async function onAccountChanged() {
 
 async function onFolderChanged() {
   selectedMessage.value = null
+  clearSelection()
   await loadMessages()
 }
 
@@ -138,6 +155,7 @@ async function refreshMessages() {
     if (requestId === messageLoadRequest && accountId === selectedAccountId.value && folder === selectedFolder.value) {
       messages.value = page?.messages || []
       nextPageToken.value = page?.nextPageToken || ''
+      clearSelection()
     }
   } catch (e) {
     if (requestId === messageLoadRequest) setError((e as Error).message)
@@ -153,6 +171,7 @@ async function loadMessages() {
     messages.value = readLocalDrafts()
     nextPageToken.value = ''
     loadingList.value = false
+    clearSelection()
     return
   }
 
@@ -173,6 +192,7 @@ async function loadMessages() {
     ) {
       messages.value = page?.messages || []
       nextPageToken.value = page?.nextPageToken || ''
+      clearSelection()
       // 첫 화면의 캐시가 비어 있을 때만 앱 시작 자동 새로고침을 수행한다.
       // refreshMessages가 끝난 뒤에는 결과가 비어 있어도 다시 호출하지 않는다.
       if (messages.value.length === 0 && !startupAutoRefreshAttempted) {
@@ -220,7 +240,7 @@ function selectMessage(m: Message) {
   composeDraft.value = isDraftFolder(selectedFolder.value) ? m : null
   showCompose.value = composeDraft.value !== null
   // 메일을 열면 메일 서버에도 읽음으로 반영한다. 실패해도 본문 열람은 막지 않는다.
-  if (m.unread) void markRead(m, true)
+  if (m.unread) void markRead([m], true)
 }
 
 // 캐시된 메시지를 식별하는 키. Gmail은 원격 ID를, IMAP은 UID를 사용한다.
@@ -228,45 +248,112 @@ function messageKey(m: Message): string {
   return m.id || `uid:${m.uid}`
 }
 
+// 메시지를 백엔드 일괄 API에 넘길 식별자로 바꾼다.
+function messageRef(m: Message): MessageRef {
+  return { id: m.id || '', uid: m.uid || 0 }
+}
+
 // 읽음 상태를 메일 서버(Gmail UNREAD 라벨 / IMAP \Seen 플래그)에 반영한다.
 // 화면은 먼저 바꾸고, 실패하면 이전 상태로 되돌린다.
-async function markRead(m: Message, read: boolean) {
-  if (!selectedAccountId.value || selectedFolder.value === LOCAL_DRAFT_FOLDER) return
-  const previous = m.unread
-  m.unread = !read
+async function markRead(targets: Message[], read: boolean) {
+  if (!selectedAccountId.value || isLocalDrafts.value || !targets.length) return
+  const previous = targets.map(m => m.unread)
+  targets.forEach(m => { m.unread = !read })
   try {
-    await EmailService.MessageMarkRead(selectedAccountId.value, selectedFolder.value, m.id || '', m.uid || 0, read)
+    await EmailService.MessagesMarkRead(selectedAccountId.value, selectedFolder.value, targets.map(messageRef), read)
   } catch (e) {
-    m.unread = previous
+    targets.forEach((m, index) => { m.unread = previous[index] })
     setError((e as Error).message)
   }
 }
 
 function toggleRead(m: Message) {
-  void markRead(m, m.unread === true)
+  void markRead([m], m.unread === true)
 }
 
 // 메일을 서버에서 삭제한다. Gmail은 휴지통으로, IMAP은 폴더에서 제거된다.
-async function deleteMessage(m: Message) {
-  if (selectedFolder.value === LOCAL_DRAFT_FOLDER) {
-    deleteLocalDraft(m)
-    if (selectedMessage.value && messageKey(selectedMessage.value) === messageKey(m)) selectedMessage.value = null
-    return
-  }
-  if (!selectedAccountId.value || deletingMessage.value) return
-  if (!confirm(`메일 "${m.subject || '(제목 없음)'}" 을(를) 삭제할까요?`)) return
+async function deleteMessages(targets: Message[]) {
+  if (!targets.length || deletingMessage.value) return
+  const label = targets.length === 1
+    ? `메일 "${targets[0].subject || '(제목 없음)'}"`
+    : `선택한 메일 ${targets.length}개`
+  if (!confirm(`${label} 을(를) 삭제할까요?`)) return
 
   deletingMessage.value = true
   try {
-    await EmailService.MessageDelete(selectedAccountId.value, selectedFolder.value, m.id || '', m.uid || 0)
-    const key = messageKey(m)
-    messages.value = messages.value.filter(item => messageKey(item) !== key)
-    if (selectedMessage.value && messageKey(selectedMessage.value) === key) selectedMessage.value = null
-    setInfo('메일이 삭제되었습니다.')
+    if (isLocalDrafts.value) {
+      targets.forEach(deleteLocalDraft)
+    } else {
+      if (!selectedAccountId.value) return
+      await EmailService.MessagesDelete(selectedAccountId.value, selectedFolder.value, targets.map(messageRef))
+    }
+    dropFromList(targets)
+    setInfo(`메일 ${targets.length}개를 삭제했습니다.`)
   } catch (e) {
     setError((e as Error).message)
   } finally {
     deletingMessage.value = false
+  }
+}
+
+// 선택한 메일을 다른 폴더로 옮긴다. 옮긴 메일은 현재 목록에서 사라진다.
+async function moveMessages(targets: Message[], targetFolder: string) {
+  if (!selectedAccountId.value || !targets.length || !targetFolder || bulkRunning.value) return
+  bulkRunning.value = true
+  try {
+    await EmailService.MessagesMove(selectedAccountId.value, selectedFolder.value, targetFolder, targets.map(messageRef))
+    dropFromList(targets)
+    setInfo(`메일 ${targets.length}개를 "${targetFolder}" 폴더로 옮겼습니다.`)
+  } catch (e) {
+    setError((e as Error).message)
+  } finally {
+    bulkRunning.value = false
+    moveTarget.value = ''
+  }
+}
+
+// 처리한 메일을 목록과 선택 상태에서 함께 제거한다.
+function dropFromList(targets: Message[]) {
+  const keys = new Set(targets.map(messageKey))
+  messages.value = messages.value.filter(item => !keys.has(messageKey(item)))
+  keys.forEach(key => selectedKeys.value.delete(key))
+  selectedKeys.value = new Set(selectedKeys.value)
+  if (selectedMessage.value && keys.has(messageKey(selectedMessage.value))) selectedMessage.value = null
+}
+
+function toggleSelection(m: Message, index: number, shiftKey: boolean) {
+  const next = new Set(selectedKeys.value)
+  // Shift 클릭은 직전에 누른 항목부터 지금 항목까지를 한 번에 선택한다.
+  if (shiftKey && lastToggledIndex >= 0 && lastToggledIndex < messages.value.length) {
+    const [from, to] = [Math.min(lastToggledIndex, index), Math.max(lastToggledIndex, index)]
+    for (let i = from; i <= to; i++) next.add(messageKey(messages.value[i]))
+  } else {
+    const key = messageKey(m)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+  }
+  selectedKeys.value = next
+  lastToggledIndex = index
+}
+
+function toggleSelectAll() {
+  selectedKeys.value = allSelected.value ? new Set() : new Set(messages.value.map(messageKey))
+  lastToggledIndex = -1
+}
+
+function clearSelection() {
+  selectedKeys.value = new Set()
+  lastToggledIndex = -1
+}
+
+async function bulkMarkRead(read: boolean) {
+  const targets = selectedMessages.value
+  if (!targets.length || bulkRunning.value) return
+  bulkRunning.value = true
+  try {
+    await markRead(targets, read)
+  } finally {
+    bulkRunning.value = false
   }
 }
 
@@ -505,6 +592,14 @@ onMounted(() => {
 
     <section class="list-pane">
       <div class="list-header">
+        <label class="select-all" :title="allSelected ? '전체 선택 해제' : '전체 선택'">
+          <input
+            type="checkbox"
+            :checked="allSelected"
+            :disabled="!messages.length"
+            @change="toggleSelectAll"
+          />
+        </label>
         <div class="list-title">
           {{ selectedFolder }}
           <span v-if="unreadCount" class="unread-badge" :title="`읽지 않은 메일 ${unreadCount}개`">{{ unreadCount }}</span>
@@ -513,6 +608,25 @@ onMounted(() => {
           <button class="btn" @click="refreshMessages" :disabled="!selectedAccountId || loadingList">새로고침</button>
           <button class="btn primary" @click="openCompose" :disabled="!canSend">메일 쓰기</button>
         </div>
+      </div>
+
+      <div v-if="selectedKeys.size" class="bulk-bar">
+        <span class="bulk-count">{{ selectedKeys.size }}개 선택</span>
+        <template v-if="!isLocalDrafts">
+          <button class="btn sm" :disabled="bulkRunning" @click="bulkMarkRead(true)">읽음</button>
+          <button class="btn sm" :disabled="bulkRunning" @click="bulkMarkRead(false)">안 읽음</button>
+          <select
+            v-model="moveTarget"
+            class="move-select"
+            :disabled="bulkRunning || !moveTargets.length"
+            @change="moveMessages(selectedMessages, moveTarget)"
+          >
+            <option value="">폴더 이동…</option>
+            <option v-for="folder in moveTargets" :key="folder" :value="folder">{{ folder }}</option>
+          </select>
+        </template>
+        <button class="btn sm danger-btn" :disabled="deletingMessage" @click="deleteMessages(selectedMessages)">삭제</button>
+        <button class="btn sm bulk-clear" @click="clearSelection">선택 해제</button>
       </div>
 
       <div v-if="error" class="alert error">
@@ -528,19 +642,26 @@ onMounted(() => {
         <div v-else-if="messages.length === 0" class="state">메일이 없습니다</div>
         <ul v-else class="message-list">
           <li
-            v-for="m in messages"
-            :key="m.uid"
-            :class="{ unread: m.unread, selected: selectedMessage?.uid === m.uid }"
+            v-for="(m, index) in messages"
+            :key="messageKey(m)"
+            :class="{ unread: m.unread, selected: selectedMessage?.uid === m.uid, checked: selectedKeys.has(messageKey(m)) }"
             @click="selectMessage(m)"
           >
             <div class="msg-row">
+              <input
+                class="msg-check"
+                type="checkbox"
+                :checked="selectedKeys.has(messageKey(m))"
+                :aria-label="`${m.subject || '(제목 없음)'} 선택`"
+                @click.stop="toggleSelection(m, index, ($event as MouseEvent).shiftKey)"
+              />
               <span class="unread-dot" :class="{ hidden: !m.unread }" aria-hidden="true"></span>
               <div class="msg-from">{{ m.from }}</div>
               <button
                 class="icon-btn sm danger msg-delete"
                 title="메일 삭제"
                 :disabled="deletingMessage"
-                @click.stop="deleteMessage(m)"
+                @click.stop="deleteMessages([m])"
               >✕</button>
             </div>
             <div class="msg-subject">{{ m.subject }}</div>
@@ -593,7 +714,7 @@ onMounted(() => {
           <button
             class="btn danger-btn"
             :disabled="deletingMessage"
-            @click="deleteMessage(selectedMessage)"
+            @click="deleteMessages([selectedMessage])"
           >{{ deletingMessage ? '삭제 중…' : '삭제' }}</button>
         </div>
         <section v-if="selectedMessage.attachments?.length" class="attachments" aria-label="첨부파일">
@@ -745,7 +866,31 @@ onMounted(() => {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
-.list-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.list-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.select-all { display: flex; align-items: center; flex-shrink: 0; }
+.select-all input, .msg-check { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.msg-check { flex: 0 0 auto; }
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+.bulk-count { margin-right: 2px; color: var(--accent); font-size: 12px; font-weight: 600; }
+.bulk-clear { margin-left: auto; }
+.move-select {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.move-select:disabled { opacity: 0.5; cursor: not-allowed; }
 .unread-badge {
   min-width: 20px;
   padding: 1px 6px;
@@ -812,6 +957,7 @@ onMounted(() => {
 }
 .message-list li:hover { background: var(--panel-2); }
 .message-list li.selected { background: var(--panel-2); border-left: 3px solid var(--accent); padding-left: 13px; }
+.message-list li.checked { background: rgba(79, 124, 255, 0.1); }
 .message-list li.unread .msg-subject { font-weight: 700; }
 .message-list li.unread .msg-from { color: var(--text); font-weight: 600; }
 .msg-row { display: flex; align-items: center; gap: 6px; min-width: 0; }

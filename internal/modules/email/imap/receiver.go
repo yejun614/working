@@ -129,10 +129,14 @@ func (r *Receiver) ListPage(acc *account.Account, credential, folder, pageToken 
 	return types.MessagePage{Messages: out, NextPageToken: next}, nil
 }
 
-// SetSeen은 지정한 메시지의 \Seen 플래그를 설정하거나 해제한다.
+// SetSeen은 지정한 메시지들의 \Seen 플래그를 한 번의 접속으로 설정하거나 해제한다.
 // seen이 true면 읽음, false면 읽지 않음으로 서버 상태를 바꾼다.
-func (r *Receiver) SetSeen(acc *account.Account, credential, folder string, uid uint32, seen bool) error {
-	c, err := r.openFolder(acc, credential, folder, uid)
+func (r *Receiver) SetSeen(acc *account.Account, credential, folder string, uids []uint32, seen bool) error {
+	seqset, err := seqSetOf(uids)
+	if err != nil {
+		return err
+	}
+	c, err := r.openFolder(acc, credential, folder)
 	if err != nil {
 		return err
 	}
@@ -142,23 +146,27 @@ func (r *Receiver) SetSeen(acc *account.Account, credential, folder string, uid 
 	if !seen {
 		op = imap.RemoveFlags
 	}
-	if err := storeFlag(c, uid, op, imap.SeenFlag); err != nil {
+	if err := storeFlag(c, seqset, op, imap.SeenFlag); err != nil {
 		return fmt.Errorf("읽음 상태 변경 실패: %w", err)
 	}
 	return nil
 }
 
-// Delete는 메시지에 \Deleted 플래그를 설정한 뒤 EXPUNGE로 폴더에서 제거한다.
+// Delete는 메시지들에 \Deleted 플래그를 설정한 뒤 EXPUNGE로 폴더에서 제거한다.
 // EXPUNGE는 IMAP 표준상 해당 폴더에서 \Deleted가 붙은 메시지를 모두 정리하므로,
 // 다른 클라이언트가 이미 삭제 표시해 둔 메시지도 함께 사라질 수 있다.
-func (r *Receiver) Delete(acc *account.Account, credential, folder string, uid uint32) error {
-	c, err := r.openFolder(acc, credential, folder, uid)
+func (r *Receiver) Delete(acc *account.Account, credential, folder string, uids []uint32) error {
+	seqset, err := seqSetOf(uids)
+	if err != nil {
+		return err
+	}
+	c, err := r.openFolder(acc, credential, folder)
 	if err != nil {
 		return err
 	}
 	defer c.Logout()
 
-	if err := storeFlag(c, uid, imap.AddFlags, imap.DeletedFlag); err != nil {
+	if err := storeFlag(c, seqset, imap.AddFlags, imap.DeletedFlag); err != nil {
 		return fmt.Errorf("메일 삭제 표시 실패: %w", err)
 	}
 	if err := c.Expunge(nil); err != nil {
@@ -167,14 +175,33 @@ func (r *Receiver) Delete(acc *account.Account, credential, folder string, uid u
 	return nil
 }
 
+// Move는 메시지들을 다른 폴더로 옮긴다.
+// 서버가 MOVE 확장을 지원하지 않으면 go-imap이 COPY 후 삭제로 대체한다.
+func (r *Receiver) Move(acc *account.Account, credential, folder, target string, uids []uint32) error {
+	if strings.TrimSpace(target) == "" {
+		return fmt.Errorf("옮길 폴더를 지정해야 합니다")
+	}
+	seqset, err := seqSetOf(uids)
+	if err != nil {
+		return err
+	}
+	c, err := r.openFolder(acc, credential, folder)
+	if err != nil {
+		return err
+	}
+	defer c.Logout()
+
+	if err := c.UidMove(seqset, target); err != nil {
+		return fmt.Errorf("폴더 이동 실패(%s): %w", target, err)
+	}
+	return nil
+}
+
 // openFolder는 IMAP 서버에 연결하고 폴더를 쓰기 가능 모드로 선택한다.
 // 플래그 변경은 읽기 전용 선택에서는 거부되므로 Select의 readOnly를 false로 둔다.
-func (r *Receiver) openFolder(acc *account.Account, credential, folder string, uid uint32) (*client.Client, error) {
+func (r *Receiver) openFolder(acc *account.Account, credential, folder string) (*client.Client, error) {
 	if acc.IMAPConfig() == nil {
 		return nil, fmt.Errorf("계정에 IMAP 설정이 없습니다: %s", acc.ID)
-	}
-	if uid == 0 {
-		return nil, fmt.Errorf("메시지 UID가 필요합니다")
 	}
 	if folder == "" {
 		folder = "INBOX"
@@ -190,10 +217,26 @@ func (r *Receiver) openFolder(acc *account.Account, credential, folder string, u
 	return c, nil
 }
 
-// storeFlag는 UID로 지정한 단일 메시지의 플래그를 추가하거나 제거한다.
-func storeFlag(c *client.Client, uid uint32, op imap.FlagsOp, flag string) error {
+// seqSetOf는 UID 목록을 IMAP 명령에 쓸 집합으로 만든다.
+// 유효한 UID가 하나도 없으면 서버에 요청하지 않고 오류를 반환한다.
+func seqSetOf(uids []uint32) (*imap.SeqSet, error) {
 	seqset := new(imap.SeqSet)
-	seqset.AddNum(uid)
+	count := 0
+	for _, uid := range uids {
+		if uid == 0 {
+			continue
+		}
+		seqset.AddNum(uid)
+		count++
+	}
+	if count == 0 {
+		return nil, fmt.Errorf("메시지 UID가 필요합니다")
+	}
+	return seqset, nil
+}
+
+// storeFlag는 지정한 메시지 집합의 플래그를 추가하거나 제거한다.
+func storeFlag(c *client.Client, seqset *imap.SeqSet, op imap.FlagsOp, flag string) error {
 	return c.UidStore(seqset, imap.FormatFlagsOp(op, true), []any{flag}, nil)
 }
 
