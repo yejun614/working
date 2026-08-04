@@ -115,6 +115,15 @@ export function ListRefreshPage(accID: string, folder: string, pageToken: string
 }
 
 /**
+ * MessageMarkRead는 메일 서버의 읽음 상태를 변경하고 SQLite 캐시에도 반영한다.
+ * Gmail 계정은 UNREAD 라벨을, IMAP 계정은 \Seen 플래그를 사용한다.
+ * messageID는 Gmail 원격 메시지 ID이며 IMAP 계정에서는 비어 있고 uid로 식별한다.
+ */
+export function MessageMarkRead(accID: string, folder: string, messageID: string, uid: number, read: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2368225048, accID, folder, messageID, uid, read);
+}
+
+/**
  * Page는 네트워크를 호출하지 않고 캐시된 목록과 다음 페이지 커서를 반환한다.
  */
 export function Page(accID: string, folder: string): $CancellablePromise<types$0.MessagePage> {

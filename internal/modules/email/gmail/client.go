@@ -118,6 +118,8 @@ func (c *Client) ListPage(folder, pageToken string) (types.MessagePage, error) {
 		if err != nil {
 			return types.MessagePage{}, fmt.Errorf("Gmail 원문 파싱 실패: %w", err)
 		}
+		// 읽음 처리와 삭제는 Gmail 원격 메시지 ID를 그대로 사용하므로 함께 담는다.
+		message.ID = detail.ID
 		message.UID = stableUID(detail.ID)
 		message.Unread = contains(detail.LabelIDs, "UNREAD")
 		messages = append(messages, message)
@@ -198,6 +200,23 @@ func (c *Client) Send(acc *account.Account, msg *types.Message) error {
 		ID string `json:"id"`
 	}
 	return c.post("/messages/send", payload, &result)
+}
+
+// SetUnread는 Gmail 메시지의 UNREAD 라벨을 추가하거나 제거해 읽음 상태를 바꾼다.
+func (c *Client) SetUnread(id string, unread bool) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("Gmail 메시지 ID가 필요합니다")
+	}
+	payload := struct {
+		AddLabelIDs    []string `json:"addLabelIds,omitempty"`
+		RemoveLabelIDs []string `json:"removeLabelIds,omitempty"`
+	}{}
+	if unread {
+		payload.AddLabelIDs = []string{"UNREAD"}
+	} else {
+		payload.RemoveLabelIDs = []string{"UNREAD"}
+	}
+	return c.post("/messages/"+url.PathEscape(id)+"/modify", payload, nil)
 }
 
 func (c *Client) get(path string, query url.Values, out any) error {

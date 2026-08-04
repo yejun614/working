@@ -42,6 +42,8 @@ const selectedAccount = computed(() =>
   accounts.value.find(a => a.id === selectedAccountId.value) || null
 )
 const canSend = computed(() => accounts.value.some(account => account.smtp))
+// 현재 폴더에서 읽지 않은 메일 수. 목록 헤더에 배지로 표시한다.
+const unreadCount = computed(() => messages.value.filter(m => m.unread).length)
 
 const sanitizedBodyHTML = computed(() =>
   sanitizeHTML(selectedMessage.value?.html || '')
@@ -214,6 +216,26 @@ function selectMessage(m: Message) {
   replyTarget.value = null
   composeDraft.value = isDraftFolder(selectedFolder.value) ? m : null
   showCompose.value = composeDraft.value !== null
+  // 메일을 열면 메일 서버에도 읽음으로 반영한다. 실패해도 본문 열람은 막지 않는다.
+  if (m.unread) void markRead(m, true)
+}
+
+// 읽음 상태를 메일 서버(Gmail UNREAD 라벨 / IMAP \Seen 플래그)에 반영한다.
+// 화면은 먼저 바꾸고, 실패하면 이전 상태로 되돌린다.
+async function markRead(m: Message, read: boolean) {
+  if (!selectedAccountId.value || selectedFolder.value === LOCAL_DRAFT_FOLDER) return
+  const previous = m.unread
+  m.unread = !read
+  try {
+    await EmailService.MessageMarkRead(selectedAccountId.value, selectedFolder.value, m.id || '', m.uid || 0, read)
+  } catch (e) {
+    m.unread = previous
+    setError((e as Error).message)
+  }
+}
+
+function toggleRead(m: Message) {
+  void markRead(m, m.unread === true)
 }
 
 function isDraftFolder(folder: string): boolean {
@@ -478,7 +500,10 @@ onMounted(() => {
 
     <section class="list-pane">
       <div class="list-header">
-        <div class="list-title">{{ selectedFolder }}</div>
+        <div class="list-title">
+          {{ selectedFolder }}
+          <span v-if="unreadCount" class="unread-badge" :title="`읽지 않은 메일 ${unreadCount}개`">{{ unreadCount }}</span>
+        </div>
         <div class="list-actions">
           <button class="btn" @click="refreshMessages" :disabled="!selectedAccountId || loadingList">새로고침</button>
           <button class="btn primary" @click="openCompose" :disabled="!canSend">메일 쓰기</button>
@@ -499,9 +524,13 @@ onMounted(() => {
             :class="{ unread: m.unread, selected: selectedMessage?.uid === m.uid }"
             @click="selectMessage(m)"
           >
-            <div class="msg-from">{{ m.from }}</div>
+            <div class="msg-row">
+              <span class="unread-dot" :class="{ hidden: !m.unread }" aria-hidden="true"></span>
+              <div class="msg-from">{{ m.from }}</div>
+            </div>
             <div class="msg-subject">{{ m.subject }}</div>
             <div class="msg-date">{{ formatDate(m.date) }}</div>
+            <span class="sr-only">{{ m.unread ? '읽지 않음' : '읽음' }}</span>
           </li>
         </ul>
         <div v-if="nextPageToken" class="load-more">
@@ -541,6 +570,11 @@ onMounted(() => {
           <button class="btn" @click="showRaw = !showRaw">
             {{ showRaw ? '본문 보기' : '원문 보기' }}
           </button>
+          <button
+            class="btn"
+            v-if="selectedFolder !== LOCAL_DRAFT_FOLDER"
+            @click="toggleRead(selectedMessage)"
+          >{{ selectedMessage.unread ? '읽음으로 표시' : '안 읽음으로 표시' }}</button>
         </div>
         <section v-if="selectedMessage.attachments?.length" class="attachments" aria-label="첨부파일">
           <h3>첨부파일 ({{ selectedMessage.attachments.length }})</h3>
@@ -704,7 +738,17 @@ onMounted(() => {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
-.list-title { font-weight: 600; }
+.list-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.unread-badge {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
 .list-actions { display: flex; gap: 6px; }
 .btn {
   background: var(--panel-2);
@@ -747,6 +791,25 @@ onMounted(() => {
 .message-list li:hover { background: var(--panel-2); }
 .message-list li.selected { background: var(--panel-2); border-left: 3px solid var(--accent); padding-left: 13px; }
 .message-list li.unread .msg-subject { font-weight: 700; }
+.message-list li.unread .msg-from { color: var(--text); font-weight: 600; }
+.msg-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.unread-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+/* 읽은 메일도 같은 자리를 차지하게 해 목록의 좌측 정렬이 흔들리지 않도록 한다. */
+.unread-dot.hidden { visibility: hidden; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
 .load-more {
   display: flex;
   justify-content: center;
@@ -758,7 +821,7 @@ onMounted(() => {
   user-select: text;
   --wails-draggable: no-drag;
 }
-.msg-from { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.msg-from { flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .msg-subject { color: var(--text); margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .msg-date { font-size: 11px; color: var(--muted); }
 

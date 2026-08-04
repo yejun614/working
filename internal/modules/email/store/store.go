@@ -149,6 +149,35 @@ func (s *Store) CachePage(acc, folder string, page types.MessagePage) error {
 	return storage.PutJSON(s.db, cacheKey(acc, folder), cachedMessages{AccountID: acc, Folder: folder, Messages: page.Messages, NextPageToken: page.NextPageToken})
 }
 
+// SetCachedUnread는 캐시된 메시지의 읽음 상태를 갱신한다.
+// 메일 서버 반영이 끝난 뒤 호출해, 새로고침 없이도 목록 표시가 서버와 일치하게 한다.
+func (s *Store) SetCachedUnread(acc, folder, id string, uid uint32, unread bool) error {
+	page, found, e := s.CachedPage(acc, folder)
+	if e != nil || !found {
+		return e
+	}
+	changed := false
+	for i := range page.Messages {
+		if matchMessage(page.Messages[i], id, uid) && page.Messages[i].Unread != unread {
+			page.Messages[i].Unread = unread
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.CachePage(acc, folder, page)
+}
+
+// matchMessage는 원격 메시지 ID 또는 IMAP UID로 캐시된 메시지를 식별한다.
+// Gmail은 ID를, IMAP은 UID를 사용하므로 둘 중 채워진 값으로 비교한다.
+func matchMessage(m types.Message, id string, uid uint32) bool {
+	if id != "" && m.ID != "" {
+		return m.ID == id
+	}
+	return uid != 0 && m.UID == uid
+}
+
 // CachedFolders는 SQLite에 기록된 폴더만 반환한다.
 func (s *Store) CachedFolders(acc string) ([]string, error) {
 	var keys []string

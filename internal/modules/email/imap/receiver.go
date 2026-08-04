@@ -129,6 +129,55 @@ func (r *Receiver) ListPage(acc *account.Account, credential, folder, pageToken 
 	return types.MessagePage{Messages: out, NextPageToken: next}, nil
 }
 
+// SetSeen은 지정한 메시지의 \Seen 플래그를 설정하거나 해제한다.
+// seen이 true면 읽음, false면 읽지 않음으로 서버 상태를 바꾼다.
+func (r *Receiver) SetSeen(acc *account.Account, credential, folder string, uid uint32, seen bool) error {
+	c, err := r.openFolder(acc, credential, folder, uid)
+	if err != nil {
+		return err
+	}
+	defer c.Logout()
+
+	var op imap.FlagsOp = imap.AddFlags
+	if !seen {
+		op = imap.RemoveFlags
+	}
+	if err := storeFlag(c, uid, op, imap.SeenFlag); err != nil {
+		return fmt.Errorf("읽음 상태 변경 실패: %w", err)
+	}
+	return nil
+}
+
+// openFolder는 IMAP 서버에 연결하고 폴더를 쓰기 가능 모드로 선택한다.
+// 플래그 변경은 읽기 전용 선택에서는 거부되므로 Select의 readOnly를 false로 둔다.
+func (r *Receiver) openFolder(acc *account.Account, credential, folder string, uid uint32) (*client.Client, error) {
+	if acc.IMAP == nil {
+		return nil, fmt.Errorf("계정에 IMAP 설정이 없습니다: %s", acc.ID)
+	}
+	if uid == 0 {
+		return nil, fmt.Errorf("메시지 UID가 필요합니다")
+	}
+	if folder == "" {
+		folder = "INBOX"
+	}
+	c, err := r.connect(acc, credential)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := c.Select(folder, false); err != nil {
+		_ = c.Logout()
+		return nil, fmt.Errorf("폴더 선택 실패(%s): %w", folder, err)
+	}
+	return c, nil
+}
+
+// storeFlag는 UID로 지정한 단일 메시지의 플래그를 추가하거나 제거한다.
+func storeFlag(c *client.Client, uid uint32, op imap.FlagsOp, flag string) error {
+	seqset := new(imap.SeqSet)
+	seqset.AddNum(uid)
+	return c.UidStore(seqset, imap.FormatFlagsOp(op, true), []any{flag}, nil)
+}
+
 // connect는 IMAP 서버에 연결 후 로그인한다.
 func (r *Receiver) connect(acc *account.Account, credential string) (*client.Client, error) {
 	addr := fmt.Sprintf("%s:%d", acc.IMAP.Host, acc.IMAP.Port)
@@ -163,8 +212,9 @@ func (r *Receiver) connect(acc *account.Account, credential string) (*client.Cli
 // toMessage는 imap.Message를 types.Message로 변환한다.
 func toMessage(m *imap.Message, section *imap.BodySectionName) types.Message {
 	msg := types.Message{
-		UID:    m.Uid,
-		Unread: hasFlag(m, imap.SeenFlag),
+		UID: m.Uid,
+		// IMAP의 \Seen 플래그는 "읽음"을 뜻하므로 읽지 않음 여부는 그 부정이다.
+		Unread: !hasFlag(m, imap.SeenFlag),
 	}
 	if m.Envelope != nil {
 		msg.Subject = decodeRFC2047(m.Envelope.Subject)

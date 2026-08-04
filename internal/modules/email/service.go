@@ -292,6 +292,50 @@ func (s *Service) ListMore(accID, folder, pageToken string) (types.MessagePage, 
 	return page, nil
 }
 
+// MessageMarkRead는 메일 서버의 읽음 상태를 변경하고 SQLite 캐시에도 반영한다.
+// Gmail 계정은 UNREAD 라벨을, IMAP 계정은 \Seen 플래그를 사용한다.
+// messageID는 Gmail 원격 메시지 ID이며 IMAP 계정에서는 비어 있고 uid로 식별한다.
+func (s *Service) MessageMarkRead(accID, folder, messageID string, uid uint32, read bool) error {
+	acc, cred, err := s.credentials(accID)
+	if err != nil {
+		return err
+	}
+	if acc.AuthType == account.AuthOAuth2 {
+		client, err := s.gmailClient(acc, cred, messageID)
+		if err != nil {
+			return err
+		}
+		if err := client.SetUnread(messageID, !read); err != nil {
+			return err
+		}
+	} else if err := s.receiver.SetSeen(acc, cred, folder, uid, read); err != nil {
+		return err
+	}
+	return s.store.SetCachedUnread(accID, folder, messageID, uid, !read)
+}
+
+// credentials는 계정 메타데이터와 키체인 자격증명을 함께 조회한다.
+func (s *Service) credentials(accID string) (*account.Account, string, error) {
+	acc, err := s.store.Get(accID)
+	if err != nil {
+		return nil, "", err
+	}
+	cred, err := s.store.Credential(accID)
+	if err != nil {
+		return nil, "", err
+	}
+	return acc, cred, nil
+}
+
+// gmailClient는 OAuth 계정용 Gmail 클라이언트를 만든다.
+// 이전 버전이 캐시한 메시지에는 원격 ID가 없으므로, 그 경우 새로고침을 안내한다.
+func (s *Service) gmailClient(acc *account.Account, cred, messageID string) (*gmail.Client, error) {
+	if strings.TrimSpace(messageID) == "" {
+		return nil, fmt.Errorf("Gmail 메시지 ID가 없습니다. 목록을 새로고침한 뒤 다시 시도하세요")
+	}
+	return gmail.New(cred, func(updated string) error { return s.store.Save(acc, updated) })
+}
+
 // AttachmentData는 원문 MIME 메시지에서 첨부파일 바이트를 추출해 Base64로 반환한다.
 // 프론트엔드는 List 응답에 포함된 원문과 첨부파일 인덱스를 사용하므로,
 // 다운로드나 미리보기 때 메일 서버를 다시 조회하지 않는다.
