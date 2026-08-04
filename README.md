@@ -4,7 +4,7 @@
 
 ### 모듈형 Windows 데스크톱 업무 보조 앱
 
-이메일 · 캘린더 · 칸반 보드를 하나의 가벼운 앱에서.
+이메일 · 캘린더 · 문서 · 칸반 보드를 하나의 가벼운 앱에서.
 
 ![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)
 ![Wails](https://img.shields.io/badge/Wails-v3-FF4800?logo=wails&logoColor=white)
@@ -18,7 +18,7 @@
 
 ## 📖 소개
 
-**Working**은 이메일, 캘린더, 칸반 보드를 한 곳에서 관리할 수 있는
+**Working**은 이메일, 캘린더, 문서, 칸반 보드를 한 곳에서 관리할 수 있는
 Windows 데스크톱 업무 보조 앱입니다. 각 기능은 독립적인 모듈로 분리되어
 있어, 필요한 기능만 켜고 끌 수 있는 모듈식 구조로 되어 있습니다.
 
@@ -31,6 +31,9 @@ Google 캘린더를 모두 사용합니다.
 - **캘린더**: 로컬 일정 관리와 Google Calendar · Apple iCloud · Outlook
 등 CalDAV 서버 연동. OAuth 기반 Google 인증과 일정 캐시 동기화를
 지원합니다.
+- **문서**: 마크다운 문서 작성과 편집. 본문에 `[[다른 문서 제목]]`을 적으면
+옵시디언처럼 문서 사이를 눌러 오갈 수 있고, 어떤 문서가 이 문서를
+링크했는지도 함께 보여줍니다.
 - **칸반**: 보드 · 컬럼 · 카드 구조의 간단한 칸반 보드. 드래그 앤 드롭으로
 카드 순서를 변경하고, 카드 마감일을 캘린더에 읽기 전용 종일 일정으로
 표시합니다.
@@ -92,6 +95,19 @@ Google 캘린더를 모두 사용합니다.
 | 마감일 연동   | 카드 마감일을 캘린더에 읽기 전용 종일 일정으로 표시          |
 
 
+### 📝 문서 모듈
+
+
+| 기능        | 설명                                              |
+| --------- | ----------------------------------------------- |
+| 마크다운 편집   | TUI Editor 기반 편집기, 본문과 미리보기를 나란히 표시             |
+| 위키 링크     | `[[문서 제목]]`을 미리보기에서 눌러 이동. 없는 문서는 다르게 표시하고 눌러 생성 |
+| 백링크       | 현재 문서를 링크한 문서 목록을 하단에 표시                        |
+| 제목 변경 반영  | 제목을 바꾸면 다른 문서의 링크도 함께 갱신해 끊기지 않음                |
+| 자동 저장     | 입력을 멈추면 저장하고 저장 상태를 표시                          |
+| 검색        | 제목과 본문으로 문서 목록 필터링                              |
+
+
 ---
 
 ## 🛠️ 기술 스택
@@ -106,6 +122,7 @@ Google 캘린더를 모두 사용합니다.
 | OAuth | [golang.org/x/oauth2](https://pkg.go.dev/golang.org/x/oauth2) |
 | 캘린더   | [go-ical](https://github.com/emersion/go-ical), CalDAV        |
 | 메일    | [go-imap](https://github.com/emersion/go-imap), Gmail API     |
+| 문서    | [TUI Editor](https://ui.toast.com/tui-editor)                 |
 | 폰트    | [Pretendard](https://github.com/orioncactus/pretendard)       |
 
 
@@ -136,15 +153,21 @@ working/
 │     │  ├─ caldav/                 # CalDAV 클라이언트
 │     │  ├─ ical/                   # iCalendar 파싱/직렬화
 │     │  └─ store/                  # 일정 캐시
-│     └─ kanban/                    # 칸반 모듈
+│     ├─ kanban/                    # 칸반 모듈
+│     │  ├─ service.go              # Wails Service
+│     │  └─ store/                  # 보드/컬럼/카드 저장
+│     └─ document/                  # 문서 모듈
 │        ├─ service.go              # Wails Service
-│        └─ store/                  # 보드/컬럼/카드 저장
+│        ├─ link.go                 # [[문서 제목]] 링크 파싱/갱신
+│        ├─ types/                  # 문서 모델
+│        └─ store/                  # 문서 저장
 ├─ frontend/
 │  ├─ src/components/
 │  │  ├─ account/                   # 통합 계정 관리 UI
 │  │  ├─ email/                     # 이메일 UI
 │  │  ├─ calendar/                  # 캘린더 UI
-│  │  └─ kanban/                    # 칸반 UI
+│  │  ├─ kanban/                    # 칸반 UI
+│  │  └─ document/                  # 문서 편집 UI
 │  ├─ src/theme.ts                  # 공통 테마 (다크/라이트)
 │  ├─ public/fonts/                 # Pretendard 폰트
 │  └─ bindings/                     # Wails가 자동 생성하는 TS 바인딩
