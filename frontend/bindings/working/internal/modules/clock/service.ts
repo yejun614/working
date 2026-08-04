@@ -15,6 +15,15 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 import * as types$0 from "./types/models.js";
 
 /**
+ * Notify는 타이머나 뽀모도로 구간이 끝났음을 데스크톱 알림으로 알린다.
+ * 앱이 최소화되어 있거나 다른 창을 보고 있어도 알 수 있게 한다.
+ * 알림을 쓸 수 없는 환경에서는 오류를 반환하며, 화면은 소리와 문구로 안내한다.
+ */
+export function Notify(title: string, body: string): $CancellablePromise<void> {
+    return $Call.ByID(3269143397, title, body);
+}
+
+/**
  * SaveSettings는 설정을 검증해 저장하고, 실제로 저장된 값을 반환한다.
  */
 export function SaveSettings(settings: types$0.Settings | null): $CancellablePromise<types$0.Settings | null> {

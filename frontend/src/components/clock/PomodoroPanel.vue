@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { playAlarm } from '../../alarm'
+import { notifyDesktop } from './notify'
 import type { PomodoroSettings } from '../../../bindings/working/internal/modules/clock/types/models'
 
 const props = defineProps<{ settings: PomodoroSettings }>()
@@ -22,6 +23,8 @@ const remaining = ref(0)
 // 이번 세트에서 끝낸 집중 횟수. 긴 휴식을 마치면 0으로 돌아간다.
 const completedFocus = ref(0)
 const showSettings = ref(false)
+// 방금 끝난 구간을 화면에도 알린다. 다음 구간을 시작하면 지운다.
+const finishedNotice = ref('')
 const draft = ref<PomodoroSettings>({ ...props.settings })
 let ticker: ReturnType<typeof setInterval> | undefined
 
@@ -76,21 +79,27 @@ function tick() {
 function completePhase() {
   stopTicker()
   running.value = false
-  playAlarm(phase.value === 'focus' ? 3 : 2)
+  const done = phase.value
+  playAlarm(done === 'focus' ? 3 : 2)
 
-  if (phase.value === 'focus') {
+  if (done === 'focus') {
     completedFocus.value += 1
     const rounds = props.settings.roundsBeforeLongBreak
     phase.value = completedFocus.value % rounds === 0 ? 'longBreak' : 'shortBreak'
   } else {
-    if (phase.value === 'longBreak') completedFocus.value = 0
+    if (done === 'longBreak') completedFocus.value = 0
     phase.value = 'focus'
   }
   remaining.value = phaseMs.value
+
+  const next = `${phaseLabels[phase.value]} ${phaseMinutes.value[phase.value]}분을 시작할 수 있습니다.`
+  finishedNotice.value = `${phaseLabels[done]} 시간이 끝났습니다. ${next}`
+  notifyDesktop(`${phaseLabels[done]} 완료`, next)
 }
 
 function start() {
   if (running.value) return
+  finishedNotice.value = ''
   if (remaining.value <= 0) remaining.value = phaseMs.value
   endsAt.value = Date.now() + remaining.value
   running.value = true
@@ -106,6 +115,7 @@ function pause() {
 
 // 지금 구간을 건너뛰고 다음 구간으로 넘어간다.
 function skip() {
+  finishedNotice.value = ''
   stopTicker()
   running.value = false
   endsAt.value = 0
@@ -120,6 +130,7 @@ function skip() {
 }
 
 function resetAll() {
+  finishedNotice.value = ''
   stopTicker()
   running.value = false
   endsAt.value = 0
@@ -144,6 +155,7 @@ onBeforeUnmount(stopTicker)
 
 <template>
   <div class="panel">
+    <div v-if="finishedNotice" class="alert done" role="alert">{{ finishedNotice }}</div>
     <div class="phase" :class="phase">{{ phaseLabels[phase] }}</div>
     <div class="readout" :class="{ running }">{{ formatRemaining(remaining) }}</div>
 
@@ -204,6 +216,15 @@ onBeforeUnmount(stopTicker)
 .progress-fill { height: 100%; background: var(--accent); transition: width 0.2s linear; }
 .progress-fill.shortBreak { background: var(--ok); }
 .progress-fill.longBreak { background: #ffc65c; }
+
+.alert.done {
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: rgba(255, 198, 92, 0.14);
+  color: #ffc65c;
+  font-size: 13px;
+  text-align: center;
+}
 
 .rounds { display: flex; gap: 6px; }
 .round-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }

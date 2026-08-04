@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount } from 'vue'
 import { playAlarm } from '../../alarm'
+import { notifyDesktop } from './notify'
 
 const presets = [
   { label: '1분', seconds: 60 },
@@ -50,6 +51,20 @@ function tick() {
   finished.value = true
   stopTicker()
   playAlarm()
+  notifyDesktop('타이머 완료', `${formatDuration(totalMs.value)} 타이머가 끝났습니다.`)
+}
+
+// 알림 문구에 쓸 전체 길이를 사람이 읽는 형태로 만든다.
+function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor(total / 60) % 60
+  const seconds = total % 60
+  const parts: string[] = []
+  if (hours) parts.push(`${hours}시간`)
+  if (minutes) parts.push(`${minutes}분`)
+  if (seconds || !parts.length) parts.push(`${seconds}초`)
+  return parts.join(' ')
 }
 
 function start() {

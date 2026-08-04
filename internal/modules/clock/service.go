@@ -8,6 +8,8 @@ package clock
 
 import (
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"working/internal/modules/clock/store"
 	"working/internal/modules/clock/types"
@@ -27,6 +29,13 @@ const maxWorldClocks = 20
 // Service는 프론트엔드에 바인딩되는 시계 모듈 서비스이다.
 type Service struct {
 	store *store.Store
+
+	// 데스크톱 알림은 처음 쓸 때 준비한다. notify.go 참고.
+	notifyOnce     sync.Once
+	notify         notifier
+	notifyErr      error
+	notifyShutdown func() error
+	notifySeq      atomic.Uint64
 }
 
 // NewService는 시계 모듈 Service를 생성한다.
@@ -39,7 +48,12 @@ func NewService() (*Service, error) {
 }
 
 // ServiceShutdown은 Wails 종료 시 호출되는 훅이다.
-func (s *Service) ServiceShutdown() {}
+// 알림 서비스를 준비했다면 함께 정리한다.
+func (s *Service) ServiceShutdown() {
+	if s.notifyShutdown != nil {
+		_ = s.notifyShutdown()
+	}
+}
 
 // Settings는 저장된 설정을 반환한다. 저장된 값이 없으면 기본값을 준다.
 func (s *Service) Settings() (*types.Settings, error) {
