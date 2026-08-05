@@ -1,44 +1,64 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import EmailView from './components/email/EmailView.vue'
-import CalendarView from './components/calendar/CalendarView.vue'
-import KanbanView from './components/kanban/KanbanView.vue'
-import DocumentView from './components/document/DocumentView.vue'
-import ClockView from './components/clock/ClockView.vue'
-import AccountsView from './components/account/AccountsView.vue'
+import { ref, watch } from 'vue'
 import { applyTheme, isDarkMode } from './theme'
+import {
+  canDisableModule,
+  enabledModules,
+  moduleEntries,
+  moveModule,
+  moveModuleTo,
+  resetModuleLayout,
+  setModuleEnabled,
+  type ModuleId,
+} from './modules'
 
-const activeModule = ref<'email' | 'calendar' | 'kanban' | 'document' | 'clock' | 'account'>('calendar')
+// 처음 열 화면은 캘린더로 하되, 캘린더를 껐다면 남은 첫 모듈을 연다.
+function initialModule(): ModuleId {
+  const modules = enabledModules.value
+  const calendar = modules.find((module) => module.id === 'calendar')
+  return (calendar ?? modules[0]).id
+}
+
+const activeModule = ref<ModuleId>(initialModule())
 const showSettings = ref(false)
+
+// 보고 있던 모듈을 설정에서 끄면 빈 화면이 남으므로 첫 모듈로 옮긴다.
+watch(enabledModules, (modules) => {
+  if (!modules.some((module) => module.id === activeModule.value)) {
+    activeModule.value = modules[0].id
+  }
+})
+
+const draggedModule = ref<ModuleId | null>(null)
+const dropTargetModule = ref<ModuleId | null>(null)
+
+function previewModuleDrop(id: ModuleId) {
+  if (!draggedModule.value) return
+  dropTargetModule.value = id === draggedModule.value ? null : id
+}
+
+function dropModule(id: ModuleId) {
+  const dragged = draggedModule.value
+  draggedModule.value = null
+  dropTargetModule.value = null
+  if (dragged) moveModuleTo(dragged, id)
+}
+
+function cancelModuleDrag() {
+  draggedModule.value = null
+  dropTargetModule.value = null
+}
 </script>
 
 <template>
   <div class="app-shell">
     <nav class="tab-bar">
       <button
-        :class="{ active: activeModule === 'calendar' }"
-        @click="activeModule = 'calendar'"
-      >캘린더</button>
-      <button
-        :class="{ active: activeModule === 'email' }"
-        @click="activeModule = 'email'"
-      >이메일</button>
-      <button
-        :class="{ active: activeModule === 'kanban' }"
-        @click="activeModule = 'kanban'"
-      >칸반</button>
-      <button
-        :class="{ active: activeModule === 'document' }"
-        @click="activeModule = 'document'"
-      >문서</button>
-      <button
-        :class="{ active: activeModule === 'clock' }"
-        @click="activeModule = 'clock'"
-      >시계</button>
-      <button
-        :class="{ active: activeModule === 'account' }"
-        @click="activeModule = 'account'"
-      >계정</button>
+        v-for="module in enabledModules"
+        :key="module.id"
+        :class="{ active: activeModule === module.id }"
+        @click="activeModule = module.id"
+      >{{ module.label }}</button>
       <button class="settings-button" @click="showSettings = !showSettings">⚙ 설정</button>
     </nav>
     <section v-if="showSettings" class="settings-panel" aria-label="앱 설정">
@@ -47,14 +67,57 @@ const showSettings = ref(false)
         <span>Dark Mode</span>
       </label>
       <p class="setting-description">앱 전체 화면과 이메일 본문에 적용됩니다.</p>
+      <div class="settings-divider"></div>
+      <div class="setting-row setting-heading">
+        <span>모듈</span>
+        <button class="reset-button" @click="resetModuleLayout()">기본값</button>
+      </div>
+      <p class="setting-description module-description">
+        체크를 끄면 탭이 숨겨지고, 항목을 끌어 놓거나 화살표를 누르면 탭 순서가 바뀝니다.
+      </p>
+      <ul class="module-list">
+        <li
+          v-for="(entry, index) in moduleEntries"
+          :key="entry.id"
+          class="module-row"
+          :class="{ dragging: draggedModule === entry.id, 'drop-target': dropTargetModule === entry.id }"
+          draggable="true"
+          @dragstart="draggedModule = entry.id"
+          @dragover.prevent="previewModuleDrop(entry.id)"
+          @drop.prevent="dropModule(entry.id)"
+          @dragend="cancelModuleDrag"
+        >
+          <span class="drag-handle" aria-hidden="true">⠿</span>
+          <label class="module-name">
+            <input
+              type="checkbox"
+              :checked="entry.enabled"
+              :disabled="entry.enabled && !canDisableModule(entry.id)"
+              :title="entry.enabled && !canDisableModule(entry.id) ? '최소 한 개의 모듈은 켜 두어야 합니다.' : ''"
+              @change="setModuleEnabled(entry.id, ($event.target as HTMLInputElement).checked)"
+            />
+            <span :class="{ disabled: !entry.enabled }">{{ entry.definition.label }}</span>
+          </label>
+          <button class="order-button" :disabled="index === 0" title="앞으로" @click="moveModule(entry.id, -1)">↑</button>
+          <button
+            class="order-button"
+            :disabled="index === moduleEntries.length - 1"
+            title="뒤로"
+            @click="moveModule(entry.id, 1)"
+          >↓</button>
+        </li>
+      </ul>
     </section>
     <main class="module-container">
-      <CalendarView v-show="activeModule === 'calendar'" />
-      <EmailView v-show="activeModule === 'email'" />
-      <KanbanView v-show="activeModule === 'kanban'" />
-      <DocumentView v-if="activeModule === 'document'" />
-      <ClockView v-show="activeModule === 'clock'" />
-      <AccountsView v-if="activeModule === 'account'" />
+      <!-- 켜져 있는 모듈만 만들고, 그중 보고 있는 하나만 보여 준다.
+           lazy 모듈은 볼 때만 만들어 두므로 탭을 벗어나면 다시 정리된다. -->
+      <template v-for="module in enabledModules" :key="module.id">
+        <component
+          :is="module.component"
+          v-if="!module.lazy || activeModule === module.id"
+          v-show="activeModule === module.id"
+        />
+      </template>
     </main>
   </div>
 </template>
@@ -142,7 +205,9 @@ button {
   top: 42px;
   right: 8px;
   z-index: 20;
-  min-width: 220px;
+  min-width: 260px;
+  max-height: calc(100vh - 60px);
+  overflow-y: auto;
   padding: 14px;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -161,6 +226,89 @@ button {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
+}
+.settings-divider {
+  margin: 14px 0 12px;
+  border-top: 1px solid var(--border);
+}
+.setting-heading {
+  justify-content: space-between;
+  font-weight: 600;
+  cursor: default;
+}
+.reset-button {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 3px 8px;
+}
+.reset-button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.module-description {
+  margin-left: 0;
+}
+.module-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.module-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  /* 끌어 놓기 중에는 li 안의 글자가 선택되지 않도록 한다. */
+  user-select: none;
+  cursor: grab;
+  transition: opacity 0.12s, border-color 0.12s, background 0.12s;
+}
+.module-row:hover {
+  background: var(--panel-2);
+}
+.module-row.dragging {
+  opacity: 0.4;
+}
+.module-row.drop-target {
+  border-color: var(--accent);
+  background: rgba(79, 124, 255, 0.12);
+}
+.drag-handle {
+  color: var(--muted);
+  font-size: 13px;
+}
+.module-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.module-name .disabled {
+  color: var(--muted);
+}
+.order-button {
+  width: 22px;
+  padding: 2px 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.order-button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.order-button:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 .module-container {
   flex: 1;
