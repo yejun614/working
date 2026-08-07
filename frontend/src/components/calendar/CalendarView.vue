@@ -740,11 +740,12 @@ onBeforeUnmount(() => {
   border-left: 3px solid var(--accent);
   padding-left: 13px;
 }
-.account-row { display: flex; align-items: center; gap: 8px; }
+.account-row { display: flex; align-items: center; gap: 8px; min-height: 20px; }
 .color-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-.account-name { font-weight: 600; flex: 1; }
-.account-actions { display: none; gap: 4px; }
-.account-list li:hover .account-actions { display: flex; }
+.account-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 호버 시 레이아웃이 틀어지지 않도록 자리는 항상 차지하고 보이기만 전환한다. */
+.account-actions { display: flex; gap: 4px; flex-shrink: 0; visibility: hidden; opacity: 0; }
+.account-list li:hover .account-actions { visibility: visible; opacity: 1; }
 .account-sub { font-size: 11px; color: var(--muted); margin-top: 4px; padding-left: 18px; display: flex; gap: 8px; }
 .calendar-list { list-style: none; margin: 7px 0 0 18px; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .calendar-item { display: flex; align-items: center; gap: 7px; padding: 0 !important; color: var(--muted); font-size: 11px; cursor: default !important; }
