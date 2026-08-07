@@ -7,6 +7,14 @@ import ComposeForm from './ComposeForm.vue'
 import { isDarkMode } from '../../theme'
 import { canSendMail } from '../../accounts'
 import { copyText } from '../../clipboard'
+import ResizeHandle from '../common/ResizeHandle.vue'
+import { usePaneWidth } from '../../panes'
+
+const sidebarWidth = usePaneWidth('email:sidebar', 240)
+const listWidth = usePaneWidth('email:list', 320)
+const layoutColumns = computed(() => ({
+  gridTemplateColumns: `${sidebarWidth.value}px auto ${listWidth.value}px auto minmax(0, 1fr)`,
+}))
 
 const accounts = ref<Account[]>([])
 const selectedAccountId = ref<string>('')
@@ -586,7 +594,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="layout">
+  <div class="layout" :style="layoutColumns">
     <aside class="sidebar">
       <div class="sidebar-header">
         <h1>이메일</h1>
@@ -625,6 +633,13 @@ onMounted(() => {
         </ul>
       </div>
     </aside>
+
+    <ResizeHandle
+      v-model:width="sidebarWidth"
+      :min="180"
+      :max="420"
+      label="메일함 목록 너비 조절"
+    />
 
     <section class="list-pane">
       <div class="list-header">
@@ -702,6 +717,13 @@ onMounted(() => {
         </div>
       </div>
     </section>
+
+    <ResizeHandle
+      v-model:width="listWidth"
+      :min="240"
+      :max="640"
+      label="메일 목록 너비 조절"
+    />
 
     <section class="detail-pane">
       <ComposeForm
@@ -792,9 +814,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* grid-template-columns는 드래그한 너비를 반영하도록 인라인 스타일에서 지정한다. */
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 240px) minmax(0, 320px) minmax(0, 1fr);
   width: 100%;
   min-width: 0;
   height: 100%;
@@ -835,6 +857,9 @@ onMounted(() => {
   padding: 8px 16px;
   cursor: pointer;
   border-bottom: 1px solid transparent;
+  /* 사이드바를 좁히면 긴 폴더 이름(yejun@…/Deleted Messages)이 가로 스크롤을
+     만들지 않도록 어디서든 줄바꿈한다. */
+  overflow-wrap: anywhere;
 }
 .account-list li:hover, .folder-list li:hover {
   background: var(--panel-2);

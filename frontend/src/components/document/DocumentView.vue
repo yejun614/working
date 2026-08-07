@@ -6,6 +6,13 @@ import '@toast-ui/editor/dist/theme/toastui-editor-dark.css'
 import { Service as DocumentService } from '../../../bindings/working/internal/modules/document'
 import type { Document } from '../../../bindings/working/internal/modules/document/types/models'
 import { isDarkMode } from '../../theme'
+import ResizeHandle from '../common/ResizeHandle.vue'
+import { usePaneWidth } from '../../panes'
+
+const sidebarWidth = usePaneWidth('document:sidebar', 240)
+const layoutColumns = computed(() => ({
+  gridTemplateColumns: `${sidebarWidth.value}px auto minmax(0, 1fr)`,
+}))
 
 const documents = ref<Document[]>([])
 const backlinks = ref<Document[]>([])
@@ -267,7 +274,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="document-layout">
+  <div class="document-layout" :style="layoutColumns">
     <aside class="document-sidebar">
       <div class="sidebar-header">
         <h1>문서</h1>
@@ -292,6 +299,13 @@ onBeforeUnmount(() => {
         </li>
       </ul>
     </aside>
+
+    <ResizeHandle
+      v-model:width="sidebarWidth"
+      :min="180"
+      :max="480"
+      label="문서 목록 너비 조절"
+    />
 
     <section class="document-main">
       <header class="document-header">
@@ -332,9 +346,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* grid-template-columns는 드래그한 너비를 반영하도록 인라인 스타일에서 지정한다. */
 .document-layout {
   display: grid;
-  grid-template-columns: minmax(0, 240px) minmax(0, 1fr);
   width: 100%;
   min-width: 0;
   height: 100%;

@@ -7,6 +7,14 @@ import { Service as AccountService } from '../../../bindings/working/internal/mo
 import type { Account } from '../../../bindings/working/internal/modules/account/types/models'
 import type { Event, CalendarInfo } from '../../../bindings/working/internal/modules/calendar/types/models'
 import EventForm from './EventForm.vue'
+import ResizeHandle from '../common/ResizeHandle.vue'
+import { usePaneWidth } from '../../panes'
+
+const sidebarWidth = usePaneWidth('calendar:sidebar', 220)
+const detailWidth = usePaneWidth('calendar:detail', 300)
+const layoutColumns = computed(() => ({
+  gridTemplateColumns: `${sidebarWidth.value}px auto minmax(0, 1fr) auto ${detailWidth.value}px`,
+}))
 
 const accounts = ref<Account[]>([])
 type DisplayCalendar = CalendarInfo & { accountId: string; displayColor: string }
@@ -534,20 +542,30 @@ function formatDate(s: string): string {
 
 const weekDays = ['일', '월', '화', '수', '목', '금', '토']
 
+// TUI 캘린더는 window resize만 감지하므로, 구분선 드래그로 칸 너비가 바뀌면
+// 직접 다시 그려 줘야 일정 막대가 예전 폭에 맞춰 어긋난 채 남지 않는다.
+let hostResizeObserver: ResizeObserver | null = null
+
 onMounted(async () => {
   initializeTuiCalendar()
+  if (tuiCalendarElement.value) {
+    hostResizeObserver = new ResizeObserver(() => tuiCalendar?.render())
+    hostResizeObserver.observe(tuiCalendarElement.value)
+  }
   await refreshAccounts()
   await loadEvents()
 })
 
 onBeforeUnmount(() => {
+  hostResizeObserver?.disconnect()
+  hostResizeObserver = null
   tuiCalendar?.destroy()
   tuiCalendar = null
 })
 </script>
 
 <template>
-  <div class="layout">
+  <div class="layout" :style="layoutColumns">
     <aside class="sidebar">
       <div class="sidebar-header">
         <h1>캘린더</h1>
@@ -602,6 +620,13 @@ onBeforeUnmount(() => {
       </div>
     </aside>
 
+    <ResizeHandle
+      v-model:width="sidebarWidth"
+      :min="170"
+      :max="420"
+      label="계정 목록 너비 조절"
+    />
+
     <section class="calendar-pane">
       <div v-if="reauthAccounts.length" class="alert reauth" role="alert">
         <div class="reauth-text">
@@ -646,6 +671,14 @@ onBeforeUnmount(() => {
         @mousedown.capture="selectTuiDateOnMouseDown"
       ></div>
     </section>
+
+    <ResizeHandle
+      v-model:width="detailWidth"
+      side="right"
+      :min="220"
+      :max="560"
+      label="일정 상세 너비 조절"
+    />
 
     <section class="detail-pane">
       <div class="detail-header">
@@ -702,9 +735,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* grid-template-columns는 드래그한 너비를 반영하도록 인라인 스타일에서 지정한다. */
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 220px) minmax(0, 1fr) minmax(0, 300px);
   width: 100%;
   min-width: 0;
   height: 100%;
@@ -783,7 +816,9 @@ onBeforeUnmount(() => {
   border-right: 1px solid var(--border);
 }
 .cal-header {
-  display: flex; justify-content: space-between; align-items: center;
+  /* 구분선을 끌어 달력 칸이 좁아지면 버튼이 잘리지 않도록 다음 줄로 넘긴다. */
+  display: flex; flex-wrap: wrap; gap: 8px;
+  justify-content: space-between; align-items: center;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
 }

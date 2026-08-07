@@ -2,6 +2,13 @@
 import { computed, onMounted, ref } from 'vue'
 import { Service as KanbanService } from '../../../bindings/working/internal/modules/kanban'
 import type { Board, Card, Column } from '../../../bindings/working/internal/modules/kanban/types/models'
+import ResizeHandle from '../common/ResizeHandle.vue'
+import { usePaneWidth } from '../../panes'
+
+const sidebarWidth = usePaneWidth('kanban:sidebar', 220)
+const layoutColumns = computed(() => ({
+  gridTemplateColumns: `${sidebarWidth.value}px auto minmax(0, 1fr)`,
+}))
 
 const boards = ref<Board[]>([])
 const selectedBoardId = ref('')
@@ -219,13 +226,20 @@ onMounted(loadBoards)
 </script>
 
 <template>
-  <div class="kanban-layout">
+  <div class="kanban-layout" :style="layoutColumns">
     <aside class="kanban-sidebar">
       <div class="side-heading"><h1>칸반</h1><button class="icon-btn" title="보드 추가" @click="createBoard">+</button></div>
       <div class="side-label">보드</div>
       <button v-for="board in boards" :key="board.id" class="board-item" :class="{ active: board.id === selectedBoardId }" @click="selectedBoardId = board.id; refresh()">{{ board.name }}</button>
       <div v-if="!boards.length" class="empty">보드가 없습니다</div>
     </aside>
+
+    <ResizeHandle
+      v-model:width="sidebarWidth"
+      :min="170"
+      :max="420"
+      label="보드 목록 너비 조절"
+    />
 
     <main class="kanban-main">
       <div v-if="error" class="alert error">{{ error }}</div>
@@ -262,10 +276,11 @@ onMounted(loadBoards)
 </template>
 
 <style scoped>
-.kanban-layout { display:grid; grid-template-columns:220px 1fr; height:100%; color:var(--text); }
-.kanban-sidebar { background:var(--panel); border-right:1px solid var(--border); padding:18px 12px; }
+/* grid-template-columns는 드래그한 너비를 반영하도록 인라인 스타일에서 지정한다. */
+.kanban-layout { display:grid; height:100%; color:var(--text); }
+.kanban-sidebar { background:var(--panel); border-right:1px solid var(--border); padding:18px 12px; min-width:0; overflow:auto; }
 .side-heading,.kanban-header,.column-header,.card-top,.archive-card,.header-actions { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-.side-heading h1,.kanban-header h2 { margin:0; font-size:18px; }.side-label { margin:24px 8px 8px; color:var(--muted); font-size:11px; }.board-item { width:100%; text-align:left; padding:9px 10px; border:0; border-radius:6px; background:transparent; color:var(--text); }.board-item:hover,.board-item.active { background:var(--panel-2); }.board-item.active { border-left:3px solid var(--accent); }
+.side-heading h1,.kanban-header h2 { margin:0; font-size:18px; }.side-label { margin:24px 8px 8px; color:var(--muted); font-size:11px; }.board-item { width:100%; text-align:left; padding:9px 10px; border:0; border-radius:6px; background:transparent; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.board-item:hover,.board-item.active { background:var(--panel-2); }.board-item.active { border-left:3px solid var(--accent); }
 .kanban-main { min-width:0; padding:18px; overflow:auto; }.kanban-header { margin-bottom:18px; }.kanban-header h2 { display:inline-block; margin-right:10px; }.text-btn { border:0; background:none; color:var(--muted); font-size:11px; }.text-btn:hover { color:var(--text); }.danger { color:var(--danger)!important; }
 .columns { display:flex; align-items:flex-start; gap:14px; min-height:calc(100% - 60px); }.column { width:270px; min-width:270px; background:var(--panel); border:1px solid var(--border); border-radius:8px; transition:opacity .12s, transform .12s; }.column.dragging { opacity:.45; transform:scale(.98); }.column-header { padding:10px 12px; border-bottom:1px solid var(--border); cursor:grab; }.column-header.drop-target { outline:2px solid var(--accent); outline-offset:-2px; background:rgba(91,141,239,.12); }.column-header.drop-target.drop-after { box-shadow:inset -4px 0 0 var(--accent); }.column-header h3 { margin:0; font-size:13px; }.column-header small { color:var(--muted); font-weight:normal; }.card-list { padding:8px; min-height:80px; transition:background .12s, outline .12s; }.card-list.drop-target { outline:2px dashed var(--accent); outline-offset:-3px; background:rgba(91,141,239,.08); }.task-card { margin-bottom:8px; padding:11px; background:var(--panel-2); border:1px solid var(--border); border-radius:7px; cursor:grab; transition:opacity .12s, transform .12s, border-color .12s, box-shadow .12s; }.task-card.dragging { opacity:.35; transform:scale(.97); }.task-card.drop-target { border-color:var(--accent); box-shadow:inset 0 3px 0 var(--accent); }.task-card:hover { border-color:var(--accent); }.task-card.done { opacity:.72; }.task-card.done strong { text-decoration:line-through; }.card-top { align-items:flex-start; }.card-top strong { min-width:0; line-height:1.35; overflow-wrap:anywhere; }/* 공백 없는 긴 문자열(URL 등)이 카드 폭을 넘지 않도록 어디서든 줄바꿈한다. */
 .card-description { color:var(--muted); font-size:12px; margin:8px 0; white-space:pre-wrap; overflow-wrap:anywhere; }.card-meta { display:flex; gap:8px; margin-top:9px; font-size:11px; color:var(--muted); }.priority { padding:2px 5px; border-radius:3px; }.priority.high { color:#ff8b98; background:rgba(255,90,106,.12); }.priority.medium { color:#ffc65c; background:rgba(255,198,92,.12); }.priority.low { color:var(--ok); background:rgba(56,211,159,.12); }.labels { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }.label { max-width:100%; padding:2px 5px; border-radius:3px; background:var(--border); color:var(--muted); font-size:10px; overflow-wrap:anywhere; }.checklist-progress { margin-top:8px; color:var(--muted); font-size:11px; }.add-card { width:100%; padding:8px; border:1px dashed var(--border); border-radius:6px; background:transparent; color:var(--muted); }.add-card:hover { color:var(--text); border-color:var(--accent); }.icon-btn { background:transparent; border:1px solid var(--border); color:var(--text); border-radius:4px; width:25px; height:25px; }.icon-btn.sm { width:21px; height:21px; font-size:11px; }.btn { padding:7px 12px; border:1px solid var(--border); border-radius:6px; background:var(--panel-2); color:var(--text); }.btn.primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }.btn.sm { padding:5px 8px; font-size:11px; }.alert { padding:8px 12px; margin-bottom:10px; border-radius:6px; }.alert.error { background:rgba(255,90,106,.12); color:var(--danger); }.empty,.empty-state { color:var(--muted); padding:20px; text-align:center; }.empty-state { margin:80px auto; }.archive-list { max-width:760px; }.archive-card { margin:8px 0; padding:12px; background:var(--panel); border:1px solid var(--border); border-radius:7px; }.archive-card strong,.archive-card span { display:block; }.archive-card span { color:var(--muted); font-size:11px; margin-top:4px; }
