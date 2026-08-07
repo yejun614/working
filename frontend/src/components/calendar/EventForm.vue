@@ -255,7 +255,7 @@ input, select, textarea {
   border-radius: 6px;
   padding: 7px 14px;
 }
-.btn.primary { background: var(--accent); border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn.primary:hover { background: var(--accent-hover); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .alert {

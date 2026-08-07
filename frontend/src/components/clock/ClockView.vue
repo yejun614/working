@@ -297,7 +297,7 @@ onBeforeUnmount(() => {
   font: inherit;
 }
 .clock-layout .btn:hover:not(:disabled) { background: var(--border); }
-.clock-layout .btn.primary { background: var(--accent); border-color: var(--accent); }
+.clock-layout .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .clock-layout .btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
 .clock-layout .btn.sm { padding: 4px 9px; font-size: 12px; }
 .clock-layout .btn.lg { padding: 9px 20px; font-size: 14px; }

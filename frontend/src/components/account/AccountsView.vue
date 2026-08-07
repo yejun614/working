@@ -232,7 +232,7 @@ onMounted(refresh)
 }
 .btn:hover:not(:disabled) { background: var(--border); }
 .btn.sm { padding: 4px 9px; font-size: 12px; }
-.btn.primary { background: var(--accent); border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn.danger { color: var(--danger); }
 .btn.warning { color: #ffc65c; border-color: rgba(255, 198, 92, 0.5); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }

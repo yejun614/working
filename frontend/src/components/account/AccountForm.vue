@@ -330,7 +330,7 @@ async function connectGoogle() {
   background: var(--panel-2);
   color: var(--text);
 }
-.btn.primary { background: var(--accent); border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .icon-btn {
   background: transparent;

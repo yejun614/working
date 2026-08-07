@@ -799,7 +799,7 @@ onBeforeUnmount(() => {
 }
 .btn.sm { padding: 3px 8px; font-size: 12px; }
 .btn:hover { background: var(--border); }
-.btn.primary { background: var(--accent); border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn.primary:hover { background: var(--accent-hover); }
 .btn.danger { color: var(--danger); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }

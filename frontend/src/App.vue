@@ -132,6 +132,8 @@ function cancelModuleDrag() {
   --muted: #9aa3b8;
   --accent: #4f7cff;
   --accent-hover: #6a92ff;
+  /* accent 배경 위에 올리는 글자색. --text는 라이트 모드에서 검게 변해 대비가 무너진다. */
+  --on-accent: #ffffff;
   --danger: #ff5a6a;
   --ok: #38d39f;
 }
@@ -144,6 +146,7 @@ function cancelModuleDrag() {
   --muted: #697386;
   --accent: #3d68d8;
   --accent-hover: #3158bf;
+  --on-accent: #ffffff;
   --danger: #d94355;
   --ok: #168c68;
 }

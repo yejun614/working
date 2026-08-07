@@ -938,6 +938,7 @@ onMounted(() => {
 .btn.primary {
   background: var(--accent);
   border-color: var(--accent);
+  color: var(--on-accent);
 }
 .btn.primary:hover { background: var(--accent-hover); }
 .btn.sm { padding: 3px 8px; font-size: 12px; }
