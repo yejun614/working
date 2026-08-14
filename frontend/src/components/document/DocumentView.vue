@@ -3,6 +3,19 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import Editor from '@toast-ui/editor'
 import '@toast-ui/editor/dist/toastui-editor.css'
 import '@toast-ui/editor/dist/theme/toastui-editor-dark.css'
+// TOAST UI Editor가 제공하는 플러그인을 모두 켠다.
+// 각 플러그인은 자체 스타일시트를 함께 요구하므로 CSS도 같이 불러온다.
+import chart from '@toast-ui/editor-plugin-chart'
+import '@toast-ui/chart/dist/toastui-chart.css'
+import codeSyntaxHighlight from '@toast-ui/editor-plugin-code-syntax-highlight/dist/toastui-editor-plugin-code-syntax-highlight-all'
+import '@toast-ui/editor-plugin-code-syntax-highlight/dist/toastui-editor-plugin-code-syntax-highlight.css'
+import 'prismjs/themes/prism.css'
+import colorSyntax from '@toast-ui/editor-plugin-color-syntax'
+import 'tui-color-picker/dist/tui-color-picker.css'
+import '@toast-ui/editor-plugin-color-syntax/dist/toastui-editor-plugin-color-syntax.css'
+import tableMergedCell from '@toast-ui/editor-plugin-table-merged-cell'
+import '@toast-ui/editor-plugin-table-merged-cell/dist/toastui-editor-plugin-table-merged-cell.css'
+import uml from '@toast-ui/editor-plugin-uml'
 import { Service as DocumentService } from '../../../bindings/working/internal/modules/document'
 import type { Document } from '../../../bindings/working/internal/modules/document/types/models'
 import { isDarkMode } from '../../theme'
@@ -38,6 +51,95 @@ const filteredDocuments = computed(() => {
     doc.title.toLowerCase().includes(keyword) || (doc.content || '').toLowerCase().includes(keyword)
   )
 })
+
+/* ---------- 편집 모드 ---------- */
+
+// markdown/wysiwyg는 TUI Editor가 처리하고, text는 서식 없이 원문만 다루는
+// 메모장 모드이다. 세 모드 모두 같은 본문(마크다운 원문)을 편집한다.
+type EditMode = 'markdown' | 'wysiwyg' | 'text'
+
+const MODE_KEY = 'working:document-mode'
+const WRAP_KEY = 'working:document-wrap'
+
+const modes: Array<{ id: EditMode; label: string }> = [
+  { id: 'markdown', label: '마크다운' },
+  { id: 'wysiwyg', label: 'WYSIWYG' },
+  { id: 'text', label: '일반 텍스트' },
+]
+
+function loadMode(): EditMode {
+  try {
+    const raw = localStorage.getItem(MODE_KEY)
+    if (raw === 'markdown' || raw === 'wysiwyg' || raw === 'text') return raw
+  } catch {
+    // 저장소를 쓸 수 없으면 기본 모드로 시작한다.
+  }
+  return 'markdown'
+}
+
+function loadWrap(): boolean {
+  try {
+    return localStorage.getItem(WRAP_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+const editMode = ref<EditMode>(loadMode())
+// 일반 텍스트 모드의 본문. 에디터와 따로 들고 있다가 모드를 바꿀 때 주고받는다.
+const plainText = ref('')
+// Windows 메모장처럼 자동 줄바꿈은 기본으로 꺼 둔다.
+const wrapText = ref(loadWrap())
+
+function remember(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // 저장소를 쓸 수 없어도 현재 세션의 설정은 그대로 유지된다.
+  }
+}
+
+// 지금 보고 있는 모드에서 편집 중인 본문을 가져온다.
+function currentContent(): string {
+  if (editMode.value === 'text') return plainText.value
+  return editor?.getMarkdown() ?? ''
+}
+
+// 두 편집기에 같은 본문을 넣어 둔다. 모드를 바꿔도 내용이 이어지도록.
+function setContent(value: string) {
+  plainText.value = value
+  editor?.setMarkdown(value)
+}
+
+function changeMode(next: EditMode) {
+  if (next === editMode.value) return
+  const previous = editMode.value
+  const content = currentContent()
+
+  loadingDocument = true
+  editMode.value = next
+  remember(MODE_KEY, next)
+  if (next === 'text') {
+    plainText.value = content
+  } else {
+    // 메모장에서 고친 내용을 에디터로 옮긴 뒤 마크다운/WYSIWYG를 전환한다.
+    if (previous === 'text') editor?.setMarkdown(content)
+    editor?.changeMode(next, true)
+  }
+  loadingDocument = false
+}
+
+function toggleWrap() {
+  wrapText.value = !wrapText.value
+  remember(WRAP_KEY, String(wrapText.value))
+}
+
+function onPlainInput() {
+  if (loadingDocument) return
+  scheduleSave()
+}
+
+/* ---------- 위키 링크 ---------- */
 
 // 렌더러 콜백에서 참조하는 제목 집합. 없는 문서로 향하는 링크를 다르게 표시한다.
 const knownTitles = new Set<string>()
@@ -79,20 +181,33 @@ function renderWikiLinks(node: { literal: string | null }) {
   return tokens
 }
 
+/* ---------- 에디터 ---------- */
+
 function createEditor(initialContent: string) {
   if (!editorElement.value) return
   editor = new Editor({
     el: editorElement.value,
     height: '100%',
-    initialEditType: 'markdown',
+    // 일반 텍스트 모드에서도 에디터는 살려 두고 화면에서만 감추므로,
+    // 그 경우에는 마크다운 모드로 만들어 둔다.
+    initialEditType: editMode.value === 'wysiwyg' ? 'wysiwyg' : 'markdown',
     previewStyle: 'vertical',
-    // 위키 링크는 마크다운 미리보기에서만 렌더링하므로 WYSIWYG 전환은 감춘다.
+    // 모드 전환은 헤더의 3단 스위치가 담당하므로 에디터 기본 스위치는 감춘다.
     hideModeSwitch: true,
     usageStatistics: false,
     theme: isDarkMode.value ? 'dark' : 'default',
     initialValue: initialContent,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     customHTMLRenderer: { text: renderWikiLinks as any },
+    plugins: [
+      // 표 셀 병합, 글자 색, 코드 구문 강조(모든 언어 포함), 차트, UML.
+      tableMergedCell,
+      colorSyntax,
+      codeSyntaxHighlight,
+      [chart, { minWidth: 100, maxWidth: 900, minHeight: 100, maxHeight: 400 }],
+      // UML은 plantuml.com 서버에서 그림을 받아오므로 오프라인에서는 표시되지 않는다.
+      uml,
+    ],
   })
   editor.on('change', () => {
     if (loadingDocument) return
@@ -107,10 +222,15 @@ function destroyEditor() {
 
 // 테마를 바꾸면 에디터를 다시 만들어야 하므로 편집 중인 본문을 옮겨 담는다.
 watch(isDarkMode, () => {
-  const content = editor?.getMarkdown() ?? ''
+  const content = currentContent()
   destroyEditor()
-  nextTick(() => createEditor(content))
+  nextTick(() => {
+    createEditor(content)
+    plainText.value = content
+  })
 })
+
+/* ---------- 목록/문서 ---------- */
 
 async function refreshDocuments() {
   try {
@@ -130,7 +250,7 @@ async function selectDocument(id: string) {
     loadingDocument = true
     selectedId.value = doc.id
     titleInput.value = doc.title
-    editor?.setMarkdown(doc.content || '')
+    setContent(doc.content || '')
     loadingDocument = false
     await refreshBacklinks()
   } catch (e) {
@@ -166,12 +286,12 @@ async function flushSave() {
 async function save() {
   saveTimer = undefined
   const current = selectedDocument.value
-  if (!current || !editor) return
+  if (!current) return
 
   const payload: Document = {
     ...current,
     title: titleInput.value.trim() || current.title,
-    content: editor.getMarkdown(),
+    content: currentContent(),
   }
   saveState.value = 'saving'
   error.value = ''
@@ -207,7 +327,7 @@ async function createDocument(title = '') {
     loadingDocument = true
     selectedId.value = doc.id
     titleInput.value = doc.title
-    editor?.setMarkdown('')
+    setContent('')
     loadingDocument = false
     await refreshBacklinks()
   } catch (e) {
@@ -222,7 +342,7 @@ async function deleteDocument(doc: Document) {
     if (selectedId.value === doc.id) {
       selectedId.value = ''
       titleInput.value = ''
-      editor?.setMarkdown('')
+      setContent('')
       backlinks.value = []
     }
     await refreshDocuments()
@@ -316,6 +436,25 @@ onBeforeUnmount(() => {
           :disabled="!selectedId"
           @input="onTitleInput"
         />
+        <div class="mode-switch" role="group" aria-label="편집 모드">
+          <button
+            v-for="mode in modes"
+            :key="mode.id"
+            type="button"
+            :class="{ active: editMode === mode.id }"
+            :aria-pressed="editMode === mode.id"
+            @click="changeMode(mode.id)"
+          >{{ mode.label }}</button>
+        </div>
+        <button
+          v-if="editMode === 'text'"
+          type="button"
+          class="wrap-toggle"
+          :class="{ active: wrapText }"
+          :aria-pressed="wrapText"
+          title="자동 줄바꿈"
+          @click="toggleWrap"
+        >자동 줄바꿈</button>
         <span class="save-state" role="status">
           {{ saveState === 'saving' ? '저장 중…' : saveState === 'saved' ? '저장됨' : '' }}
         </span>
@@ -330,7 +469,16 @@ onBeforeUnmount(() => {
 
       <!-- 에디터는 한 번만 만들고 문서를 바꿔 끼우므로 v-if 대신 v-show로 감춘다. -->
       <div v-show="selectedId" class="editor-wrap">
-        <div ref="editorElement" class="editor-host" @click="onEditorClick"></div>
+        <div v-show="editMode !== 'text'" ref="editorElement" class="editor-host" @click="onEditorClick"></div>
+        <textarea
+          v-show="editMode === 'text'"
+          v-model="plainText"
+          class="plain-editor"
+          :class="{ wrap: wrapText }"
+          spellcheck="false"
+          placeholder="서식 없는 텍스트를 그대로 편집합니다."
+          @input="onPlainInput"
+        ></textarea>
         <section class="backlinks">
           <h2>이 문서를 링크한 문서 <span class="count">{{ backlinks.length }}</span></h2>
           <ul v-if="backlinks.length">
@@ -452,6 +600,40 @@ onBeforeUnmount(() => {
   background: var(--panel-2);
 }
 .title-input:disabled { opacity: 0.5; }
+
+.mode-switch {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.mode-switch button {
+  padding: 5px 10px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.mode-switch button:first-child { border-left: none; }
+.mode-switch button:hover { color: var(--text); background: var(--panel-2); }
+.mode-switch button.active { background: var(--accent); color: var(--on-accent); }
+
+.wrap-toggle {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.wrap-toggle:hover { color: var(--text); background: var(--panel-2); }
+.wrap-toggle.active { border-color: var(--accent); color: var(--accent); }
+
 .save-state { flex-shrink: 0; color: var(--muted); font-size: 11px; min-width: 44px; text-align: right; }
 
 .alert { margin: 8px 16px; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
@@ -468,6 +650,26 @@ onBeforeUnmount(() => {
 
 .editor-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .editor-host { flex: 1; min-height: 0; overflow: hidden; }
+
+/* 일반 텍스트 모드는 Windows 메모장처럼 서식 없이 원문만 다룬다.
+   자동 줄바꿈은 기본으로 꺼 두고 가로 스크롤로 긴 줄을 확인한다. */
+.plain-editor {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 16px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: "D2Coding", "Courier New", monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  tab-size: 4;
+  white-space: pre;
+  overflow: auto;
+}
+.plain-editor.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .backlinks {
   flex-shrink: 0;
@@ -505,4 +707,62 @@ onBeforeUnmount(() => {
   color: var(--danger);
   border-bottom-style: dashed;
 }
+
+/* 코드 블록과 인라인 코드는 고정폭 D2 Coding으로 그린다.
+   편집 화면(마크다운·WYSIWYG)과 미리보기, 구문 강조 플러그인이 만드는
+   Prism 요소까지 모두 같은 글꼴을 쓰도록 한 번에 지정한다. */
+.toastui-editor-contents code,
+.toastui-editor-contents pre,
+.toastui-editor-contents pre code,
+.toastui-editor-md-container .toastui-editor-md-code,
+.toastui-editor-md-container .toastui-editor-md-code-block,
+.toastui-editor-ww-container .toastui-editor-ww-code-block,
+.toastui-editor-ww-container .toastui-editor-ww-code-block-highlighting,
+.toastui-editor-code-block-language-input,
+pre[class*="language-"],
+code[class*="language-"] {
+  font-family: "D2Coding", "Courier New", monospace;
+}
+
+/* Prism 기본 테마는 밝은 배경 기준이라 다크 모드에서 대비가 무너진다.
+   앱 테마가 어두울 때는 tomorrow 계열 색으로 덮어쓴다. */
+:root:not([data-theme="light"]) pre[class*="language-"],
+:root:not([data-theme="light"]) code[class*="language-"] {
+  color: #ccc;
+  background: none;
+  text-shadow: none;
+}
+:root:not([data-theme="light"]) pre[class*="language-"] { background: #2d2d2d; }
+:root:not([data-theme="light"]) .token.comment,
+:root:not([data-theme="light"]) .token.block-comment,
+:root:not([data-theme="light"]) .token.prolog,
+:root:not([data-theme="light"]) .token.doctype,
+:root:not([data-theme="light"]) .token.cdata { color: #999; }
+:root:not([data-theme="light"]) .token.punctuation { color: #ccc; }
+:root:not([data-theme="light"]) .token.tag,
+:root:not([data-theme="light"]) .token.attr-name,
+:root:not([data-theme="light"]) .token.namespace,
+:root:not([data-theme="light"]) .token.deleted { color: #e2777a; }
+:root:not([data-theme="light"]) .token.function-name { color: #6196cc; }
+:root:not([data-theme="light"]) .token.boolean,
+:root:not([data-theme="light"]) .token.number,
+:root:not([data-theme="light"]) .token.function { color: #f08d49; }
+:root:not([data-theme="light"]) .token.property,
+:root:not([data-theme="light"]) .token.class-name,
+:root:not([data-theme="light"]) .token.constant,
+:root:not([data-theme="light"]) .token.symbol { color: #f8c555; }
+:root:not([data-theme="light"]) .token.selector,
+:root:not([data-theme="light"]) .token.important,
+:root:not([data-theme="light"]) .token.atrule,
+:root:not([data-theme="light"]) .token.keyword,
+:root:not([data-theme="light"]) .token.builtin { color: #cc99cd; }
+:root:not([data-theme="light"]) .token.string,
+:root:not([data-theme="light"]) .token.char,
+:root:not([data-theme="light"]) .token.attr-value,
+:root:not([data-theme="light"]) .token.regex,
+:root:not([data-theme="light"]) .token.variable { color: #7ec699; }
+:root:not([data-theme="light"]) .token.operator,
+:root:not([data-theme="light"]) .token.entity,
+:root:not([data-theme="light"]) .token.url { color: #67cdcc; }
+:root:not([data-theme="light"]) .token.inserted { color: #8bc34a; }
 </style>
