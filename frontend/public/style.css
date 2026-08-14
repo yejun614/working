@@ -99,6 +99,23 @@
     font-display: swap;
 }
 
+/* 코드 블록과 일반 텍스트 편집기에서 쓰는 고정폭 글꼴(D2 Coding).
+   한글도 영문 두 칸 폭에 맞춰 그려지므로 표나 주석이 어긋나지 않는다. */
+@font-face {
+    font-family: "D2Coding";
+    src: url("/fonts/D2Coding.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: "D2Coding";
+    src: url("/fonts/D2CodingBold.woff2") format("woff2");
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+}
+
 :root[data-theme="light"] {
     color-scheme: light;
 }
