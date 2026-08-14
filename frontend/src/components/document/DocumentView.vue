@@ -242,6 +242,7 @@ async function refreshDocuments() {
 }
 
 async function selectDocument(id: string) {
+  hidePreview()
   if (id === selectedId.value) return
   await flushSave()
   try {
@@ -318,6 +319,7 @@ function markSaved() {
 }
 
 async function createDocument(title = '') {
+  hidePreview()
   await flushSave()
   try {
     const doc = await DocumentService.Create(title)
@@ -336,6 +338,7 @@ async function createDocument(title = '') {
 }
 
 async function deleteDocument(doc: Document) {
+  hidePreview()
   if (!confirm(`문서 "${doc.title}" 을(를) 삭제할까요?`)) return
   try {
     await DocumentService.Delete(doc.id)
@@ -380,6 +383,54 @@ function formatDate(value?: string): string {
   return isNaN(date.getTime()) ? value : date.toLocaleString()
 }
 
+/* ---------- 목록 호버 미리보기 ---------- */
+
+// 사이드바 항목에 마우스를 올리면 본문 앞부분을 팝오버로 보여 준다.
+// 사이드바는 overflow: hidden이라 팝오버는 body로 내보내 띄운다.
+const PREVIEW_DELAY = 300
+const PREVIEW_LIMIT = 240
+const PREVIEW_MAX_HEIGHT = 220
+
+const hoverDocument = ref<Document | null>(null)
+const previewPosition = ref({ top: 0, left: 0 })
+let hoverTimer: ReturnType<typeof setTimeout> | undefined
+
+// 팝오버 요약. 마크다운 기호를 걷어내 읽을 수 있는 문장만 남긴다.
+function previewText(content?: string): string {
+  const plain = (content || '')
+    .replace(/```[^\n]*\n?/g, '')             // 코드 펜스 표시
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')     // 이미지
+    .replace(/\[\[([^[\]]+)\]\]/g, '$1')      // 위키 링크
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')  // 일반 링크
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')       // 제목
+    .replace(/^\s{0,3}>\s?/gm, '')            // 인용
+    .replace(/^\s{0,3}([-*+]|\d+\.)\s+/gm, '') // 목록 기호
+    .replace(/[*_~`]/g, '')                   // 강조 기호
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  if (!plain) return ''
+  return plain.length > PREVIEW_LIMIT ? `${plain.slice(0, PREVIEW_LIMIT)}…` : plain
+}
+
+function showPreview(doc: Document, event: MouseEvent) {
+  const item = event.currentTarget as HTMLElement | null
+  if (!item) return
+  if (hoverTimer) clearTimeout(hoverTimer)
+  hoverTimer = setTimeout(() => {
+    const rect = item.getBoundingClientRect()
+    // 아래쪽 항목에서도 팝오버가 화면 밖으로 나가지 않도록 위로 밀어 올린다.
+    const top = Math.min(rect.top, window.innerHeight - PREVIEW_MAX_HEIGHT - 16)
+    previewPosition.value = { top: Math.max(12, top), left: rect.right + 10 }
+    hoverDocument.value = doc
+  }, PREVIEW_DELAY)
+}
+
+function hidePreview() {
+  if (hoverTimer) clearTimeout(hoverTimer)
+  hoverTimer = undefined
+  hoverDocument.value = null
+}
+
 onMounted(async () => {
   createEditor('')
   await refreshDocuments()
@@ -389,6 +440,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
   if (saveStateTimer) clearTimeout(saveStateTimer)
+  hidePreview()
   destroyEditor()
 })
 </script>
@@ -401,12 +453,14 @@ onBeforeUnmount(() => {
         <button class="icon-btn" title="새 문서" @click="createDocument()">+</button>
       </div>
       <input v-model="filter" class="search" type="search" placeholder="제목·본문 검색" />
-      <ul class="document-list">
+      <ul class="document-list" @scroll="hidePreview" @mouseleave="hidePreview">
         <li
           v-for="doc in filteredDocuments"
           :key="doc.id"
           :class="{ active: doc.id === selectedId }"
           @click="selectDocument(doc.id)"
+          @mouseenter="showPreview(doc, $event)"
+          @mouseleave="hidePreview"
         >
           <div class="doc-row">
             <span class="doc-title">{{ doc.title }}</span>
@@ -419,6 +473,20 @@ onBeforeUnmount(() => {
         </li>
       </ul>
     </aside>
+
+    <!-- 사이드바가 잘라내지 않도록 팝오버는 body에 붙여 띄운다. -->
+    <Teleport to="body">
+      <div
+        v-if="hoverDocument"
+        class="doc-preview"
+        :style="{ top: `${previewPosition.top}px`, left: `${previewPosition.left}px` }"
+      >
+        <strong class="preview-title">{{ hoverDocument.title }}</strong>
+        <span class="preview-date">{{ formatDate(hoverDocument.updatedAt) }}</span>
+        <p v-if="previewText(hoverDocument.content)" class="preview-body">{{ previewText(hoverDocument.content) }}</p>
+        <p v-else class="preview-body empty">내용이 비어 있습니다</p>
+      </div>
+    </Teleport>
 
     <ResizeHandle
       v-model:width="sidebarWidth"
@@ -555,6 +623,36 @@ onBeforeUnmount(() => {
 .doc-date { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
 .empty { color: var(--muted); font-style: italic; cursor: default; }
 .empty:hover { background: transparent; }
+
+/* 목록 호버 팝오버. body로 옮겨 그리므로 위치는 인라인 스타일이 정한다. */
+.doc-preview {
+  position: fixed;
+  z-index: 60;
+  width: 300px;
+  max-height: 220px;
+  overflow: hidden;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  color: var(--text);
+  /* 팝오버가 마우스를 가로채면 목록 클릭이 막히므로 이벤트를 받지 않는다. */
+  pointer-events: none;
+}
+.preview-title { display: block; font-size: 13px; overflow-wrap: anywhere; }
+.preview-date { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.preview-body {
+  margin: 8px 0 0;
+  max-height: 150px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.preview-body.empty { font-style: italic; }
 
 .icon-btn {
   background: transparent;
