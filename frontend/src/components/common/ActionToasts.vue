@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { cancelAction, pendingActions } from '../../toasts'
+import { cancelAction, completeAction, pendingActions } from '../../toasts'
 
 // 남은 시간을 초 단위로 올림해서 보여 준다. 1초 미만이라도 0초로 보이지 않게 한다.
 function remainingSeconds(remaining: number): number {
@@ -19,6 +19,14 @@ function remainingSeconds(remaining: number): number {
         <span class="action-toast-message">{{ action.message }}</span>
         <span class="action-toast-remaining">{{ remainingSeconds(action.remaining) }}초</span>
         <button class="action-toast-button" type="button" @click="cancelAction(action.id)">{{ action.actionLabel }}</button>
+        <!-- 닫기는 되돌리지 않겠다는 뜻이므로 기다리지 않고 그 자리에서 마무리한다. -->
+        <button
+          class="action-toast-close"
+          type="button"
+          title="기다리지 않고 지금 처리"
+          aria-label="알림 닫기"
+          @click="completeAction(action.id)"
+        >✕</button>
       </div>
       <div class="action-toast-progress" aria-hidden="true">
         <span :style="{ width: `${(action.remaining / action.total) * 100}%` }"></span>
@@ -65,6 +73,21 @@ function remainingSeconds(remaining: number): number {
   white-space: nowrap;
 }
 .action-toast-button:hover { background: var(--accent); color: var(--on-accent); }
+.action-toast-close {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+}
+.action-toast-close:hover { background: var(--panel-2); color: var(--text); }
 /* 남은 시간을 줄어드는 막대로도 보여 준다. */
 .action-toast-progress { height: 2px; background: var(--panel-2); }
 .action-toast-progress span { display: block; height: 100%; background: var(--accent); }

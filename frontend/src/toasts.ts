@@ -102,6 +102,15 @@ export function scheduleAction(options: ScheduleOptions): number {
   return id
 }
 
+/**
+ * completeAction은 남은 시간을 기다리지 않고 지금 실행한다.
+ * 알림을 닫는 것은 되돌리지 않겠다는 뜻이므로, 알림만 감추고 타이머를
+ * 남겨 두는 대신 그 자리에서 마무리한다.
+ */
+export function completeAction(id: number) {
+  void run(id)
+}
+
 /** cancelAction은 미뤄 둔 작업을 실행하지 않고 되돌린다. */
 export function cancelAction(id: number) {
   const entry = entries.get(id)
