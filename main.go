@@ -13,6 +13,7 @@ import (
 	documentmod "working/internal/modules/document"
 	emailmod "working/internal/modules/email"
 	kanbanmod "working/internal/modules/kanban"
+	"working/internal/platform"
 )
 
 // Wails uses Go's `embed` package to embed the frontend files into the binary.
@@ -78,7 +79,7 @@ func main() {
 		},
 	})
 
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:  "working",
 		Width:  1000,
 		Height: 700,
@@ -90,6 +91,9 @@ func main() {
 		BackgroundColour: application.NewRGB(6, 7, 15),
 		URL:              "/",
 	})
+
+	// 한국어 입력기 후보 창이 모니터 왼쪽 위에 뜨는 WebView2 문제를 보정한다.
+	platform.FixIMEPosition(window)
 
 	err = app.Run()
 	if err != nil {
