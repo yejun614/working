@@ -17,18 +17,22 @@ import tableMergedCell from '@toast-ui/editor-plugin-table-merged-cell'
 import '@toast-ui/editor-plugin-table-merged-cell/dist/toastui-editor-plugin-table-merged-cell.css'
 import uml from '@toast-ui/editor-plugin-uml'
 import { Service as DocumentService } from '../../../bindings/working/internal/modules/document'
-import type { Document } from '../../../bindings/working/internal/modules/document/types/models'
+import type { DocType, Document, Folder } from '../../../bindings/working/internal/modules/document/types/models'
 import { isDarkMode } from '../../theme'
 import ResizeHandle from '../common/ResizeHandle.vue'
-import { usePaneWidth } from '../../panes'
+import { usePaneVisible, usePaneWidth } from '../../panes'
 
 const sidebarWidth = usePaneWidth('document:sidebar', 240)
+// 탭 바의 패널 버튼으로 문서 목록을 접을 수 있다.
+const sidebarVisible = usePaneVisible('document:sidebar')
 const layoutColumns = computed(() => ({
-  gridTemplateColumns: `${sidebarWidth.value}px auto minmax(0, 1fr)`,
+  gridTemplateColumns: sidebarVisible.value
+    ? `${sidebarWidth.value}px auto minmax(0, 1fr)`
+    : 'minmax(0, 1fr)',
 }))
 
 const documents = ref<Document[]>([])
-const backlinks = ref<Document[]>([])
+const folders = ref<Folder[]>([])
 const selectedId = ref('')
 const titleInput = ref('')
 const filter = ref('')
@@ -44,38 +48,23 @@ let saveStateTimer: ReturnType<typeof setTimeout> | undefined
 
 const selectedDocument = computed(() => documents.value.find(d => d.id === selectedId.value) || null)
 
-const filteredDocuments = computed(() => {
-  const keyword = filter.value.trim().toLowerCase()
-  if (!keyword) return documents.value
-  return documents.value.filter(doc =>
-    doc.title.toLowerCase().includes(keyword) || (doc.content || '').toLowerCase().includes(keyword)
-  )
-})
+/* ---------- 문서 형식 ---------- */
 
-/* ---------- 편집 모드 ---------- */
+// 형식은 문서마다 따로 저장한다. 같은 본문을 어떤 편집기로 열지만 달라진다.
+interface DocTypeInfo {
+  id: DocType
+  label: string
+  icon: string
+  description: string
+}
 
-// markdown/wysiwyg는 TUI Editor가 처리하고, text는 서식 없이 원문만 다루는
-// 메모장 모드이다. 세 모드 모두 같은 본문(마크다운 원문)을 편집한다.
-type EditMode = 'markdown' | 'wysiwyg' | 'text'
-
-const MODE_KEY = 'working:document-mode'
-const WRAP_KEY = 'working:document-wrap'
-
-const modes: Array<{ id: EditMode; label: string }> = [
-  { id: 'markdown', label: '마크다운' },
-  { id: 'wysiwyg', label: 'WYSIWYG' },
-  { id: 'text', label: '일반 텍스트' },
+const DOC_TYPES: DocTypeInfo[] = [
+  { id: 'wysiwyg', label: '리치 텍스트', icon: 'A', description: '서식을 바로 보며 편집합니다' },
+  { id: 'markdown', label: '마크다운', icon: 'M', description: '원문을 편집하고 옆에서 미리 봅니다' },
+  { id: 'text', label: '일반 텍스트', icon: 'T', description: '서식 없이 원문만 편집합니다' },
 ]
 
-function loadMode(): EditMode {
-  try {
-    const raw = localStorage.getItem(MODE_KEY)
-    if (raw === 'markdown' || raw === 'wysiwyg' || raw === 'text') return raw
-  } catch {
-    // 저장소를 쓸 수 없으면 기본 모드로 시작한다.
-  }
-  return 'markdown'
-}
+const WRAP_KEY = 'working:document-wrap'
 
 function loadWrap(): boolean {
   try {
@@ -85,58 +74,206 @@ function loadWrap(): boolean {
   }
 }
 
-const editMode = ref<EditMode>(loadMode())
-// 일반 텍스트 모드의 본문. 에디터와 따로 들고 있다가 모드를 바꿀 때 주고받는다.
+// 지금 열어 둔 문서의 형식. 문서를 바꿀 때마다 그 문서의 값으로 맞춘다.
+const docType = ref<DocType>('markdown')
+// 일반 텍스트 형식의 본문. 에디터와 따로 들고 있다가 형식을 바꿀 때 주고받는다.
 const plainText = ref('')
-// Windows 메모장처럼 자동 줄바꿈은 기본으로 꺼 둔다.
+// Windows 메모장처럼 자동 줄바꿈은 기본으로 꺼 둔다. 이 설정만 앱 전체에서 공유한다.
 const wrapText = ref(loadWrap())
+const typeMenuOpen = ref(false)
 
-function remember(key: string, value: string) {
+function typeInfo(type?: DocType): DocTypeInfo {
+  return DOC_TYPES.find(item => item.id === type) ?? DOC_TYPES[1]
+}
+
+const currentType = computed(() => typeInfo(docType.value))
+
+function toggleWrap() {
+  wrapText.value = !wrapText.value
   try {
-    localStorage.setItem(key, value)
+    localStorage.setItem(WRAP_KEY, String(wrapText.value))
   } catch {
     // 저장소를 쓸 수 없어도 현재 세션의 설정은 그대로 유지된다.
   }
 }
 
-// 지금 보고 있는 모드에서 편집 중인 본문을 가져온다.
+// 지금 보고 있는 형식에서 편집 중인 본문을 가져온다.
 function currentContent(): string {
-  if (editMode.value === 'text') return plainText.value
+  if (docType.value === 'text') return plainText.value
   return editor?.getMarkdown() ?? ''
 }
 
-// 두 편집기에 같은 본문을 넣어 둔다. 모드를 바꿔도 내용이 이어지도록.
-function setContent(value: string) {
-  plainText.value = value
-  editor?.setMarkdown(value)
-}
-
-function changeMode(next: EditMode) {
-  if (next === editMode.value) return
-  const previous = editMode.value
-  const content = currentContent()
-
+// 형식과 본문을 함께 적용한다. 두 편집기에 같은 본문을 넣어 두어야
+// 형식을 바꿔도 내용이 이어진다.
+function applyType(type: DocType, content: string) {
   loadingDocument = true
-  editMode.value = next
-  remember(MODE_KEY, next)
-  if (next === 'text') {
-    plainText.value = content
-  } else {
-    // 메모장에서 고친 내용을 에디터로 옮긴 뒤 마크다운/WYSIWYG를 전환한다.
-    if (previous === 'text') editor?.setMarkdown(content)
-    editor?.changeMode(next, true)
+  docType.value = type
+  plainText.value = content
+  if (type !== 'text') {
+    editor?.setMarkdown(content)
+    editor?.changeMode(type === 'wysiwyg' ? 'wysiwyg' : 'markdown', true)
   }
   loadingDocument = false
 }
 
-function toggleWrap() {
-  wrapText.value = !wrapText.value
-  remember(WRAP_KEY, String(wrapText.value))
+async function changeType(next: DocType) {
+  typeMenuOpen.value = false
+  const current = selectedDocument.value
+  if (!current || next === docType.value) return
+
+  // 형식을 바꾸기 전에 편집 중이던 내용을 먼저 저장해 목록의 문서와 어긋나지 않게 한다.
+  await flushSave()
+  applyType(next, currentContent())
+  try {
+    const saved = await DocumentService.SetType(current.id, next)
+    if (saved) replaceInList(saved)
+  } catch (e) {
+    error.value = (e as Error).message
+  }
 }
 
 function onPlainInput() {
   if (loadingDocument) return
   scheduleSave()
+}
+
+/* ---------- 폴더 ---------- */
+
+const COLLAPSED_KEY = 'working:document-collapsed-folders'
+
+function loadCollapsed(): string[] {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+const collapsedFolders = ref<string[]>(loadCollapsed())
+
+function isCollapsed(id: string): boolean {
+  return collapsedFolders.value.includes(id)
+}
+
+function toggleFolder(id: string) {
+  collapsedFolders.value = isCollapsed(id)
+    ? collapsedFolders.value.filter(item => item !== id)
+    : [...collapsedFolders.value, id]
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsedFolders.value))
+  } catch {
+    // 저장소를 쓸 수 없어도 현재 세션의 펼침 상태는 그대로 유지된다.
+  }
+}
+
+// 폴더별로 담긴 문서. 목록은 이미 최근 수정순이라 그대로 나눠 담기만 한다.
+const folderGroups = computed(() =>
+  folders.value.map(folder => ({
+    folder,
+    documents: documents.value.filter(doc => doc.folderId === folder.id),
+  })),
+)
+
+// 폴더에 넣지 않은 문서. 지워진 폴더를 가리키는 문서도 여기로 모은다.
+const rootDocuments = computed(() =>
+  documents.value.filter(doc => !doc.folderId || !folders.value.some(f => f.id === doc.folderId)),
+)
+
+// 검색 중에는 폴더 구분을 접고 결과만 한 줄로 보여 준다.
+const searchResults = computed(() => {
+  const keyword = filter.value.trim().toLowerCase()
+  if (!keyword) return []
+  return documents.value.filter(doc =>
+    doc.title.toLowerCase().includes(keyword) || (doc.content || '').toLowerCase().includes(keyword)
+  )
+})
+
+const isSearching = computed(() => filter.value.trim().length > 0)
+
+async function refreshFolders() {
+  try {
+    folders.value = (await DocumentService.Folders()) || []
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+}
+
+async function createFolder() {
+  const name = prompt('새 폴더 이름')
+  if (name === null) return
+  try {
+    await DocumentService.CreateFolder(name.trim())
+    await refreshFolders()
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+}
+
+async function renameFolder(folder: Folder) {
+  const name = prompt('폴더 이름', folder.name)
+  if (name === null) return
+  const trimmed = name.trim()
+  if (!trimmed || trimmed === folder.name) return
+  try {
+    await DocumentService.RenameFolder(folder.id, trimmed)
+    await refreshFolders()
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+}
+
+async function deleteFolder(folder: Folder) {
+  if (!confirm(`폴더 "${folder.name}" 을(를) 지울까요?\n안에 있던 문서는 지워지지 않고 폴더 밖으로 나옵니다.`)) return
+  try {
+    await DocumentService.DeleteFolder(folder.id)
+    await refreshFolders()
+    await refreshDocuments()
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+}
+
+/* ---------- 문서 옮기기 ---------- */
+
+// 문서를 끌어 폴더에 놓으면 그 폴더로 옮긴다. 폴더 밖 영역에 놓으면 폴더에서 뺀다.
+const draggedDocumentId = ref('')
+// 놓을 자리 표시. 빈 문자열은 폴더 밖 영역이고, null은 놓을 곳이 없다는 뜻이다.
+const dropTarget = ref<string | null>(null)
+
+function startDocumentDrag(doc: Document) {
+  hidePreview()
+  draggedDocumentId.value = doc.id
+}
+
+function previewDrop(folderId: string) {
+  if (!draggedDocumentId.value) return
+  dropTarget.value = folderId
+}
+
+function endDocumentDrag() {
+  draggedDocumentId.value = ''
+  dropTarget.value = null
+}
+
+async function dropOnFolder(folderId: string) {
+  const id = draggedDocumentId.value
+  endDocumentDrag()
+  if (!id) return
+  const doc = documents.value.find(item => item.id === id)
+  if (!doc || (doc.folderId || '') === folderId) return
+  await moveDocument(id, folderId)
+}
+
+// 끌어 놓기 말고 문서 정보 모달에서도 폴더를 고를 수 있게 같은 동작을 함수로 둔다.
+async function moveDocument(id: string, folderId: string) {
+  try {
+    const moved = await DocumentService.MoveDocument(id, folderId)
+    if (moved) replaceInList(moved)
+  } catch (e) {
+    error.value = (e as Error).message
+  }
 }
 
 /* ---------- 위키 링크 ---------- */
@@ -188,11 +325,11 @@ function createEditor(initialContent: string) {
   editor = new Editor({
     el: editorElement.value,
     height: '100%',
-    // 일반 텍스트 모드에서도 에디터는 살려 두고 화면에서만 감추므로,
-    // 그 경우에는 마크다운 모드로 만들어 둔다.
-    initialEditType: editMode.value === 'wysiwyg' ? 'wysiwyg' : 'markdown',
+    // 일반 텍스트 문서에서도 에디터는 살려 두고 화면에서만 감추므로,
+    // 그 경우에는 마크다운으로 만들어 둔다.
+    initialEditType: docType.value === 'wysiwyg' ? 'wysiwyg' : 'markdown',
     previewStyle: 'vertical',
-    // 모드 전환은 헤더의 3단 스위치가 담당하므로 에디터 기본 스위치는 감춘다.
+    // 형식 전환은 제목 왼쪽 아이콘이 담당하므로 에디터 기본 스위치는 감춘다.
     hideModeSwitch: true,
     usageStatistics: false,
     theme: isDarkMode.value ? 'dark' : 'default',
@@ -226,11 +363,19 @@ watch(isDarkMode, () => {
   destroyEditor()
   nextTick(() => {
     createEditor(content)
-    plainText.value = content
+    applyType(docType.value, content)
   })
 })
 
 /* ---------- 목록/문서 ---------- */
+
+// replaceInList는 목록 안의 문서 하나만 갈아 끼운다.
+// 목록 전체를 다시 받으면 편집 흐름이 끊기므로 저장·이동 뒤에는 이 방법을 쓴다.
+function replaceInList(doc: Document) {
+  const index = documents.value.findIndex(item => item.id === doc.id)
+  if (index >= 0) documents.value[index] = doc
+  refreshKnownTitles()
+}
 
 async function refreshDocuments() {
   try {
@@ -248,25 +393,9 @@ async function selectDocument(id: string) {
   try {
     const doc = await DocumentService.Get(id)
     if (!doc) return
-    loadingDocument = true
     selectedId.value = doc.id
     titleInput.value = doc.title
-    setContent(doc.content || '')
-    loadingDocument = false
-    await refreshBacklinks()
-  } catch (e) {
-    loadingDocument = false
-    error.value = (e as Error).message
-  }
-}
-
-async function refreshBacklinks() {
-  if (!selectedId.value) {
-    backlinks.value = []
-    return
-  }
-  try {
-    backlinks.value = (await DocumentService.Backlinks(selectedId.value)) || []
+    applyType(typeInfo(doc.type).id, doc.content || '')
   } catch (e) {
     error.value = (e as Error).message
   }
@@ -292,6 +421,7 @@ async function save() {
   const payload: Document = {
     ...current,
     title: titleInput.value.trim() || current.title,
+    type: docType.value,
     content: currentContent(),
   }
   saveState.value = 'saving'
@@ -299,13 +429,9 @@ async function save() {
   try {
     const saved = await DocumentService.Save(payload)
     if (!saved) return
-    // 목록 전체를 다시 받지 않고 해당 항목만 갱신해 편집 흐름을 끊지 않는다.
-    const index = documents.value.findIndex(d => d.id === saved.id)
-    if (index >= 0) documents.value[index] = saved
+    replaceInList(saved)
     titleInput.value = saved.title
-    refreshKnownTitles()
     markSaved()
-    await refreshBacklinks()
   } catch (e) {
     saveState.value = 'idle'
     error.value = (e as Error).message
@@ -318,20 +444,18 @@ function markSaved() {
   saveStateTimer = setTimeout(() => { if (saveState.value === 'saved') saveState.value = 'idle' }, 2000)
 }
 
-async function createDocument(title = '') {
+async function createDocument(title = '', folderId = '') {
   hidePreview()
   await flushSave()
   try {
-    const doc = await DocumentService.Create(title)
+    // 새 문서는 지금 열어 둔 문서와 같은 형식으로 시작한다.
+    const doc = await DocumentService.Create(title, folderId, docType.value)
     if (!doc) return
     documents.value = [doc, ...documents.value]
     refreshKnownTitles()
-    loadingDocument = true
     selectedId.value = doc.id
     titleInput.value = doc.title
-    setContent('')
-    loadingDocument = false
-    await refreshBacklinks()
+    applyType(typeInfo(doc.type).id, '')
   } catch (e) {
     error.value = (e as Error).message
   }
@@ -345,8 +469,7 @@ async function deleteDocument(doc: Document) {
     if (selectedId.value === doc.id) {
       selectedId.value = ''
       titleInput.value = ''
-      setContent('')
-      backlinks.value = []
+      applyType(docType.value, '')
     }
     await refreshDocuments()
   } catch (e) {
@@ -367,7 +490,7 @@ async function onEditorClick(mouseEvent: MouseEvent) {
   try {
     const found = await DocumentService.FindByTitle(title)
     if (found) await selectDocument(found.id)
-    else await createDocument(title)
+    else await createDocument(title, selectedDocument.value?.folderId || '')
   } catch (e) {
     error.value = (e as Error).message
   }
@@ -381,6 +504,60 @@ function formatDate(value?: string): string {
   if (!value) return ''
   const date = new Date(value)
   return isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+/* ---------- 문서 정보 ---------- */
+
+const infoOpen = ref(false)
+const backlinks = ref<Document[]>([])
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// 정보 모달에 보여 줄 값. 저장 전 내용도 반영하도록 편집 중인 본문으로 센다.
+const documentInfo = computed(() => {
+  const current = selectedDocument.value
+  if (!current) return null
+  const content = infoOpen.value ? currentContent() : ''
+  return {
+    title: titleInput.value.trim() || current.title,
+    type: typeInfo(current.type),
+    folderId: current.folderId || '',
+    size: formatBytes(new TextEncoder().encode(content).length),
+    characters: [...content].length,
+    createdAt: formatDate(current.createdAt),
+    updatedAt: formatDate(current.updatedAt),
+  }
+})
+
+async function openInfo() {
+  if (!selectedId.value) return
+  infoOpen.value = true
+  backlinks.value = []
+  try {
+    backlinks.value = (await DocumentService.Backlinks(selectedId.value)) || []
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+}
+
+function closeInfo() {
+  infoOpen.value = false
+}
+
+async function openBacklink(doc: Document) {
+  closeInfo()
+  await selectDocument(doc.id)
+}
+
+// 모달과 형식 드롭다운은 Esc로 닫는다.
+function onKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  if (infoOpen.value) closeInfo()
+  typeMenuOpen.value = false
 }
 
 /* ---------- 목록 호버 미리보기 ---------- */
@@ -414,7 +591,7 @@ function previewText(content?: string): string {
 
 function showPreview(doc: Document, event: MouseEvent) {
   const item = event.currentTarget as HTMLElement | null
-  if (!item) return
+  if (!item || draggedDocumentId.value) return
   if (hoverTimer) clearTimeout(hoverTimer)
   hoverTimer = setTimeout(() => {
     const rect = item.getBoundingClientRect()
@@ -433,13 +610,15 @@ function hidePreview() {
 
 onMounted(async () => {
   createEditor('')
-  await refreshDocuments()
+  window.addEventListener('keydown', onKeydown)
+  await Promise.all([refreshDocuments(), refreshFolders()])
   if (documents.value.length) await selectDocument(documents.value[0].id)
 })
 
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
   if (saveStateTimer) clearTimeout(saveStateTimer)
+  window.removeEventListener('keydown', onKeydown)
   hidePreview()
   destroyEditor()
 })
@@ -447,31 +626,108 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="document-layout" :style="layoutColumns">
-    <aside class="document-sidebar">
+    <aside v-if="sidebarVisible" class="document-sidebar">
       <div class="sidebar-header">
         <h1>문서</h1>
-        <button class="icon-btn" title="새 문서" @click="createDocument()">+</button>
+        <div class="header-buttons">
+          <button class="icon-btn" title="새 폴더" @click="createFolder">⊞</button>
+          <button class="icon-btn" title="새 문서" @click="createDocument()">+</button>
+        </div>
       </div>
       <input v-model="filter" class="search" type="search" placeholder="제목·본문 검색" />
-      <ul class="document-list" @scroll="hidePreview" @mouseleave="hidePreview">
-        <li
-          v-for="doc in filteredDocuments"
-          :key="doc.id"
-          :class="{ active: doc.id === selectedId }"
-          @click="selectDocument(doc.id)"
-          @mouseenter="showPreview(doc, $event)"
-          @mouseleave="hidePreview"
-        >
-          <div class="doc-row">
-            <span class="doc-title">{{ doc.title }}</span>
-            <button class="icon-btn sm danger doc-delete" title="문서 삭제" @click.stop="deleteDocument(doc)">✕</button>
+
+      <div class="sidebar-body" @mouseleave="hidePreview">
+        <!-- 검색 중에는 폴더 구분 없이 결과만 보여 준다. -->
+        <ul v-if="isSearching" class="document-list">
+          <li
+            v-for="doc in searchResults"
+            :key="doc.id"
+            :class="{ active: doc.id === selectedId }"
+            @click="selectDocument(doc.id)"
+            @mouseenter="showPreview(doc, $event)"
+            @mouseleave="hidePreview"
+          >
+            <div class="doc-row">
+              <span class="doc-type" :title="typeInfo(doc.type).label">{{ typeInfo(doc.type).icon }}</span>
+              <span class="doc-title">{{ doc.title }}</span>
+              <button class="icon-btn sm danger doc-delete" title="문서 삭제" @click.stop="deleteDocument(doc)">✕</button>
+            </div>
+            <span class="doc-date">{{ formatDate(doc.updatedAt) }}</span>
+          </li>
+          <li v-if="!searchResults.length" class="empty">검색 결과가 없습니다</li>
+        </ul>
+
+        <template v-else>
+          <!-- 폴더별 묶음. 폴더 머리글에 문서를 끌어다 놓으면 그 폴더로 옮긴다. -->
+          <section
+            v-for="group in folderGroups"
+            :key="group.folder.id"
+            class="folder"
+            :class="{ 'drop-target': dropTarget === group.folder.id }"
+            @dragover.prevent="previewDrop(group.folder.id)"
+            @drop.prevent="dropOnFolder(group.folder.id)"
+          >
+            <div class="folder-row" @click="toggleFolder(group.folder.id)">
+              <span class="folder-caret" aria-hidden="true">{{ isCollapsed(group.folder.id) ? '▸' : '▾' }}</span>
+              <span class="folder-name">{{ group.folder.name }}</span>
+              <span class="folder-count">{{ group.documents.length }}</span>
+              <button class="icon-btn sm folder-action" title="폴더 이름 변경" @click.stop="renameFolder(group.folder)">✎</button>
+              <button class="icon-btn sm danger folder-action" title="폴더 삭제" @click.stop="deleteFolder(group.folder)">✕</button>
+            </div>
+            <ul v-if="!isCollapsed(group.folder.id)" class="document-list nested">
+              <li
+                v-for="doc in group.documents"
+                :key="doc.id"
+                :class="{ active: doc.id === selectedId, dragging: draggedDocumentId === doc.id }"
+                draggable="true"
+                @click="selectDocument(doc.id)"
+                @dragstart="startDocumentDrag(doc)"
+                @dragend="endDocumentDrag"
+                @mouseenter="showPreview(doc, $event)"
+                @mouseleave="hidePreview"
+              >
+                <div class="doc-row">
+                  <span class="doc-type" :title="typeInfo(doc.type).label">{{ typeInfo(doc.type).icon }}</span>
+                  <span class="doc-title">{{ doc.title }}</span>
+                  <button class="icon-btn sm danger doc-delete" title="문서 삭제" @click.stop="deleteDocument(doc)">✕</button>
+                </div>
+                <span class="doc-date">{{ formatDate(doc.updatedAt) }}</span>
+              </li>
+              <li v-if="!group.documents.length" class="empty sm">문서를 끌어다 놓으세요</li>
+            </ul>
+          </section>
+
+          <!-- 폴더 밖 문서. 이 영역에 놓으면 폴더에서 빠져나온다. -->
+          <div
+            class="root-drop"
+            :class="{ 'drop-target': dropTarget === '' }"
+            @dragover.prevent="previewDrop('')"
+            @drop.prevent="dropOnFolder('')"
+          >
+            <ul class="document-list">
+              <li
+                v-for="doc in rootDocuments"
+                :key="doc.id"
+                :class="{ active: doc.id === selectedId, dragging: draggedDocumentId === doc.id }"
+                draggable="true"
+                @click="selectDocument(doc.id)"
+                @dragstart="startDocumentDrag(doc)"
+                @dragend="endDocumentDrag"
+                @mouseenter="showPreview(doc, $event)"
+                @mouseleave="hidePreview"
+              >
+                <div class="doc-row">
+                  <span class="doc-type" :title="typeInfo(doc.type).label">{{ typeInfo(doc.type).icon }}</span>
+                  <span class="doc-title">{{ doc.title }}</span>
+                  <button class="icon-btn sm danger doc-delete" title="문서 삭제" @click.stop="deleteDocument(doc)">✕</button>
+                </div>
+                <span class="doc-date">{{ formatDate(doc.updatedAt) }}</span>
+              </li>
+              <li v-if="!documents.length" class="empty">문서가 없습니다</li>
+            </ul>
           </div>
-          <span class="doc-date">{{ formatDate(doc.updatedAt) }}</span>
-        </li>
-        <li v-if="!filteredDocuments.length" class="empty">
-          {{ documents.length ? '검색 결과가 없습니다' : '문서가 없습니다' }}
-        </li>
-      </ul>
+        </template>
+      </div>
     </aside>
 
     <!-- 사이드바가 잘라내지 않도록 팝오버는 body에 붙여 띄운다. -->
@@ -482,13 +738,14 @@ onBeforeUnmount(() => {
         :style="{ top: `${previewPosition.top}px`, left: `${previewPosition.left}px` }"
       >
         <strong class="preview-title">{{ hoverDocument.title }}</strong>
-        <span class="preview-date">{{ formatDate(hoverDocument.updatedAt) }}</span>
+        <span class="preview-date">{{ typeInfo(hoverDocument.type).label }} · {{ formatDate(hoverDocument.updatedAt) }}</span>
         <p v-if="previewText(hoverDocument.content)" class="preview-body">{{ previewText(hoverDocument.content) }}</p>
         <p v-else class="preview-body empty">내용이 비어 있습니다</p>
       </div>
     </Teleport>
 
     <ResizeHandle
+      v-if="sidebarVisible"
       v-model:width="sidebarWidth"
       :min="180"
       :max="480"
@@ -497,6 +754,35 @@ onBeforeUnmount(() => {
 
     <section class="document-main">
       <header class="document-header">
+        <!-- 제목 왼쪽 아이콘이 문서 형식이자 형식 바꾸기 버튼이다. -->
+        <div class="type-picker">
+          <button
+            class="type-button"
+            type="button"
+            :disabled="!selectedId"
+            :title="`형식: ${currentType.label} (눌러서 변경)`"
+            :aria-expanded="typeMenuOpen"
+            @click="typeMenuOpen = !typeMenuOpen"
+          >{{ currentType.icon }}</button>
+          <div v-if="typeMenuOpen" class="menu-backdrop" @click="typeMenuOpen = false"></div>
+          <ul v-if="typeMenuOpen" class="type-menu" role="menu">
+            <li v-for="type in DOC_TYPES" :key="type.id">
+              <button
+                type="button"
+                role="menuitem"
+                :class="{ active: type.id === docType }"
+                @click="changeType(type.id)"
+              >
+                <span class="menu-icon">{{ type.icon }}</span>
+                <span class="menu-text">
+                  <span class="menu-label">{{ type.label }}</span>
+                  <span class="menu-description">{{ type.description }}</span>
+                </span>
+              </button>
+            </li>
+          </ul>
+        </div>
+
         <input
           v-model="titleInput"
           class="title-input"
@@ -504,18 +790,8 @@ onBeforeUnmount(() => {
           :disabled="!selectedId"
           @input="onTitleInput"
         />
-        <div class="mode-switch" role="group" aria-label="편집 모드">
-          <button
-            v-for="mode in modes"
-            :key="mode.id"
-            type="button"
-            :class="{ active: editMode === mode.id }"
-            :aria-pressed="editMode === mode.id"
-            @click="changeMode(mode.id)"
-          >{{ mode.label }}</button>
-        </div>
         <button
-          v-if="editMode === 'text'"
+          v-if="docType === 'text'"
           type="button"
           class="wrap-toggle"
           :class="{ active: wrapText }"
@@ -526,6 +802,14 @@ onBeforeUnmount(() => {
         <span class="save-state" role="status">
           {{ saveState === 'saving' ? '저장 중…' : saveState === 'saved' ? '저장됨' : '' }}
         </span>
+        <button
+          class="info-button"
+          type="button"
+          :disabled="!selectedId"
+          title="문서 정보"
+          aria-label="문서 정보"
+          @click="openInfo"
+        >ⓘ</button>
       </header>
 
       <div v-if="error" class="alert error">{{ error }}</div>
@@ -537,9 +821,9 @@ onBeforeUnmount(() => {
 
       <!-- 에디터는 한 번만 만들고 문서를 바꿔 끼우므로 v-if 대신 v-show로 감춘다. -->
       <div v-show="selectedId" class="editor-wrap">
-        <div v-show="editMode !== 'text'" ref="editorElement" class="editor-host" @click="onEditorClick"></div>
+        <div v-show="docType !== 'text'" ref="editorElement" class="editor-host" @click="onEditorClick"></div>
         <textarea
-          v-show="editMode === 'text'"
+          v-show="docType === 'text'"
           v-model="plainText"
           class="plain-editor"
           :class="{ wrap: wrapText }"
@@ -547,17 +831,52 @@ onBeforeUnmount(() => {
           placeholder="서식 없는 텍스트를 그대로 편집합니다."
           @input="onPlainInput"
         ></textarea>
-        <section class="backlinks">
-          <h2>이 문서를 링크한 문서 <span class="count">{{ backlinks.length }}</span></h2>
-          <ul v-if="backlinks.length">
-            <li v-for="doc in backlinks" :key="doc.id">
-              <button class="backlink" type="button" @click="selectDocument(doc.id)">{{ doc.title }}</button>
-            </li>
-          </ul>
-          <p v-else class="hint">아직 이 문서를 링크한 문서가 없습니다.</p>
-        </section>
       </div>
     </section>
+
+    <Teleport to="body">
+      <div v-if="infoOpen && documentInfo" class="modal-overlay" @click.self="closeInfo">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="문서 정보">
+          <header class="modal-header">
+            <h2>문서 정보</h2>
+            <button class="icon-btn" type="button" title="닫기" @click="closeInfo">✕</button>
+          </header>
+          <dl class="info-grid">
+            <dt>문서명</dt>
+            <dd>{{ documentInfo.title }}</dd>
+            <dt>형식</dt>
+            <dd><span class="info-type">{{ documentInfo.type.icon }}</span> {{ documentInfo.type.label }}</dd>
+            <dt>폴더</dt>
+            <dd>
+              <!-- 목록에서 끌어 놓는 대신 여기서도 폴더를 옮길 수 있다. -->
+              <select
+                class="folder-select"
+                :value="documentInfo.folderId"
+                @change="moveDocument(selectedId, ($event.target as HTMLSelectElement).value)"
+              >
+                <option value="">폴더 없음</option>
+                <option v-for="folder in folders" :key="folder.id" :value="folder.id">{{ folder.name }}</option>
+              </select>
+            </dd>
+            <dt>용량</dt>
+            <dd>{{ documentInfo.size }} <span class="muted">({{ documentInfo.characters.toLocaleString() }}자)</span></dd>
+            <dt>생성일</dt>
+            <dd>{{ documentInfo.createdAt || '알 수 없음' }}</dd>
+            <dt>마지막 수정일</dt>
+            <dd>{{ documentInfo.updatedAt || '알 수 없음' }}</dd>
+          </dl>
+          <section class="modal-backlinks">
+            <h3>이 문서를 링크한 문서 <span class="count">{{ backlinks.length }}</span></h3>
+            <ul v-if="backlinks.length">
+              <li v-for="doc in backlinks" :key="doc.id">
+                <button class="backlink" type="button" @click="openBacklink(doc)">{{ doc.title }}</button>
+              </li>
+            </ul>
+            <p v-else class="hint">아직 이 문서를 링크한 문서가 없습니다.</p>
+          </section>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -586,6 +905,7 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--border);
 }
 .sidebar-header h1 { margin: 0; font-size: 18px; letter-spacing: 0.5px; }
+.header-buttons { display: flex; gap: 4px; }
 .search {
   margin: 10px 12px;
   padding: 7px 9px;
@@ -596,7 +916,32 @@ onBeforeUnmount(() => {
   font: inherit;
   font-size: 12px;
 }
-.document-list { flex: 1; list-style: none; margin: 0; padding: 0; overflow: auto; }
+.sidebar-body { flex: 1; min-height: 0; overflow: auto; }
+
+/* 폴더 묶음 */
+.folder { border-bottom: 1px solid var(--border); }
+.folder.drop-target, .root-drop.drop-target { background: rgba(79, 124, 255, 0.12); }
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.folder-row:hover { background: var(--panel-2); color: var(--text); }
+.folder-caret { flex: 0 0 auto; width: 10px; font-size: 10px; }
+.folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-count { flex: 0 0 auto; font-size: 11px; opacity: 0.7; }
+.folder-action { display: none; flex: 0 0 auto; }
+.folder-row:hover .folder-action { display: inline-flex; }
+.root-drop { min-height: 60px; }
+
+.document-list { list-style: none; margin: 0; padding: 0; }
+.document-list.nested li { padding-left: 28px; }
+.document-list.nested li.active { padding-left: 25px; }
 .document-list li {
   padding: 8px 16px;
   border-bottom: 1px solid transparent;
@@ -608,7 +953,17 @@ onBeforeUnmount(() => {
   border-left: 3px solid var(--accent);
   padding-left: 13px;
 }
+.document-list li.dragging { opacity: 0.45; }
 .doc-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* 목록의 형식 아이콘은 눈으로 구분만 하는 용도라 누를 수 없다. */
+.doc-type {
+  flex: 0 0 auto;
+  width: 15px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
 .doc-title {
   flex: 1;
   min-width: 0;
@@ -620,8 +975,9 @@ onBeforeUnmount(() => {
 }
 .doc-delete { display: none; flex: 0 0 auto; }
 .document-list li:hover .doc-delete { display: inline-flex; }
-.doc-date { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
-.empty { color: var(--muted); font-style: italic; cursor: default; }
+.doc-date { display: block; margin-top: 2px; margin-left: 21px; color: var(--muted); font-size: 11px; }
+.empty { color: var(--muted); font-style: italic; cursor: default; padding: 8px 16px; }
+.empty.sm { font-size: 11px; padding-left: 28px; }
 .empty:hover { background: transparent; }
 
 /* 목록 호버 팝오버. body로 옮겨 그리므로 위치는 인라인 스타일이 정한다. */
@@ -652,7 +1008,7 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.preview-body.empty { font-style: italic; }
+.preview-body.empty { font-style: italic; padding: 0; }
 
 .icon-btn {
   background: transparent;
@@ -681,6 +1037,65 @@ onBeforeUnmount(() => {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
+
+/* 형식 아이콘과 드롭다운 */
+.type-picker { position: relative; flex: 0 0 auto; }
+.type-button {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 700;
+}
+.type-button:hover:not(:disabled) { border-color: var(--accent); }
+.type-button:disabled { opacity: 0.4; cursor: default; }
+/* 드롭다운 밖을 누르면 닫히도록 화면 전체를 덮는 투명 판을 깐다. */
+.menu-backdrop { position: fixed; inset: 0; z-index: 30; }
+.type-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 31;
+  width: 220px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+.type-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+.type-menu button:hover { background: var(--panel-2); }
+.type-menu button.active { color: var(--accent); }
+.menu-icon {
+  flex: 0 0 auto;
+  width: 20px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+.menu-text { display: flex; flex-direction: column; min-width: 0; }
+.menu-label { font-size: 13px; }
+.menu-description { color: var(--muted); font-size: 11px; }
+
 .title-input {
   flex: 1;
   min-width: 0;
@@ -699,26 +1114,6 @@ onBeforeUnmount(() => {
 }
 .title-input:disabled { opacity: 0.5; }
 
-.mode-switch {
-  display: inline-flex;
-  flex-shrink: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-}
-.mode-switch button {
-  padding: 5px 10px;
-  border: none;
-  border-left: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.mode-switch button:first-child { border-left: none; }
-.mode-switch button:hover { color: var(--text); background: var(--panel-2); }
-.mode-switch button.active { background: var(--accent); color: var(--on-accent); }
-
 .wrap-toggle {
   flex-shrink: 0;
   padding: 5px 10px;
@@ -733,6 +1128,23 @@ onBeforeUnmount(() => {
 .wrap-toggle.active { border-color: var(--accent); color: var(--accent); }
 
 .save-state { flex-shrink: 0; color: var(--muted); font-size: 11px; min-width: 44px; text-align: right; }
+
+.info-button {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1;
+}
+.info-button:hover:not(:disabled) { color: var(--accent); border-color: var(--border); background: var(--panel-2); }
+.info-button:disabled { opacity: 0.4; cursor: default; }
 
 .alert { margin: 8px 16px; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .alert.error { background: rgba(255, 90, 106, 0.12); color: var(--danger); overflow-wrap: anywhere; }
@@ -749,7 +1161,7 @@ onBeforeUnmount(() => {
 .editor-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .editor-host { flex: 1; min-height: 0; overflow: hidden; }
 
-/* 일반 텍스트 모드는 Windows 메모장처럼 서식 없이 원문만 다룬다.
+/* 일반 텍스트 형식은 Windows 메모장처럼 서식 없이 원문만 다룬다.
    자동 줄바꿈은 기본으로 꺼 두고 가로 스크롤로 긴 줄을 확인한다. */
 .plain-editor {
   flex: 1;
@@ -769,17 +1181,61 @@ onBeforeUnmount(() => {
 }
 .plain-editor.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.backlinks {
-  flex-shrink: 0;
-  max-height: 140px;
-  overflow: auto;
-  padding: 10px 16px 14px;
-  border-top: 1px solid var(--border);
-  background: var(--panel);
+/* 문서 정보 모달 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.5);
 }
-.backlinks h2 { margin: 0 0 8px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; }
-.backlinks .count { color: var(--accent); }
-.backlinks ul { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.modal {
+  width: min(440px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: 16px 20px 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  color: var(--text);
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.modal-header h2 { margin: 0; font-size: 15px; }
+.info-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+.info-grid dt { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.info-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.info-grid .muted { color: var(--muted); }
+.info-type { color: var(--accent); font-weight: 700; }
+.folder-select {
+  max-width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.modal-backlinks { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.modal-backlinks h3 { margin: 0 0 8px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; }
+.modal-backlinks .count { color: var(--accent); }
+.modal-backlinks ul { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .backlink {
   padding: 3px 9px;
   border: 1px solid var(--border);
