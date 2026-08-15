@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { applyTheme, isDarkMode } from './theme'
 import { MODULE_PANES, togglePane, usePaneVisible } from './panes'
+import { UNDO_SEND_CHOICES, undoSendEnabled, undoSendSeconds } from './mail'
 import { flushActions } from './toasts'
 import ActionToasts from './components/common/ActionToasts.vue'
 import {
@@ -94,6 +95,21 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', flushBeforeUnlo
         <span>Dark Mode</span>
       </label>
       <p class="setting-description">앱 전체 화면과 이메일 본문에 적용됩니다.</p>
+      <div class="settings-divider"></div>
+      <div class="setting-row setting-heading"><span>메일</span></div>
+      <label class="setting-row">
+        <input v-model="undoSendEnabled" type="checkbox" />
+        <span>전송 취소 시간 두기</span>
+      </label>
+      <p class="setting-description">
+        메일을 바로 보내지 않고 잠시 기다립니다. 그 사이 오른쪽 아래 알림에서 전송을 취소할 수 있습니다.
+      </p>
+      <label class="setting-row" :class="{ disabled: !undoSendEnabled }">
+        <span>취소 가능 시간</span>
+        <select v-model.number="undoSendSeconds" class="setting-select" :disabled="!undoSendEnabled">
+          <option v-for="seconds in UNDO_SEND_CHOICES" :key="seconds" :value="seconds">{{ seconds }}초</option>
+        </select>
+      </label>
       <div class="settings-divider"></div>
       <div class="setting-row setting-heading">
         <span>모듈</span>
@@ -294,6 +310,19 @@ button {
   font-weight: 600;
   cursor: default;
 }
+/* 값을 고르는 설정 줄. 켜지 않은 항목은 흐리게 두어 관계를 드러낸다. */
+.setting-row.disabled { color: var(--muted); cursor: default; }
+.setting-select {
+  margin-left: auto;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.setting-select:disabled { opacity: 0.5; }
 .reset-button {
   background: transparent;
   border: 1px solid var(--border);

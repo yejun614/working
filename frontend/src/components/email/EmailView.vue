@@ -6,6 +6,7 @@ import type { Message, MessageRef } from '../../../bindings/working/internal/mod
 import ComposeForm from './ComposeForm.vue'
 import { isDarkMode } from '../../theme'
 import { canSendMail } from '../../accounts'
+import { undoSendSeconds } from '../../mail'
 import { scheduleAction } from '../../toasts'
 import { copyText } from '../../clipboard'
 import ResizeHandle from '../common/ResizeHandle.vue'
@@ -558,6 +559,45 @@ async function onSent() {
   await loadMessages()
 }
 
+/**
+ * 전송 취소 시간을 켜 두었을 때의 발송이다. 바로 보내지 않고 알림을 띄운 뒤
+ * 시간이 지나면 보낸다. 보내기 전까지는 작성중 메일에 남겨 두므로, 그 사이
+ * 앱을 닫아도 쓴 내용이 사라지지 않는다.
+ */
+function onScheduleSend(payload: { accountId: string; message: Message }) {
+  // 이미 작성중 메일에 있던 초안이면 그 자리에 갱신한다.
+  saveLocalDraft(composeDraft.value ? { ...composeDraft.value, ...payload.message } : payload.message)
+  const draft = composeDraft.value || payload.message
+
+  showCompose.value = false
+  composeDraft.value = null
+  replyTarget.value = null
+
+  const recipient = payload.message.to || ''
+  scheduleAction({
+    message: `${recipient}(으)로 보냅니다.`,
+    actionLabel: '전송 취소',
+    seconds: undoSendSeconds.value,
+    commit: async () => {
+      try {
+        await EmailService.Send(payload.accountId, draft)
+        deleteLocalDraft(draft)
+        setInfo('메일이 전송되었습니다.')
+        await loadMessages()
+      } catch (e) {
+        setError(`메일 전송 실패: ${(e as Error).message} (작성중 메일에 남겨 두었습니다)`)
+      }
+    },
+    cancel: () => {
+      // 취소하면 쓰던 내용 그대로 작성 화면을 다시 연다.
+      composeDraft.value = draft
+      replyTarget.value = null
+      showCompose.value = true
+      setInfo('메일 전송을 취소했습니다.')
+    },
+  })
+}
+
 function setError(msg: string) {
   error.value = msg
   info.value = ''
@@ -791,6 +831,7 @@ onMounted(() => {
         embedded
         @close="closeCompose"
         @changed="saveLocalDraft"
+        @schedule="onScheduleSend"
         @sent="onSent"
       />
       <div v-else-if="!selectedMessage" class="state">메시지를 선택하세요</div>

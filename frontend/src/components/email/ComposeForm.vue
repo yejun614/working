@@ -6,6 +6,7 @@ import '@toast-ui/editor/dist/theme/toastui-editor-dark.css'
 import { Service as EmailService } from '../../../bindings/working/internal/modules/email'
 import type { Account } from '../../../bindings/working/internal/modules/account/types/models'
 import { canSendMail } from '../../accounts'
+import { undoSendEnabled } from '../../mail'
 import type { Message } from '../../../bindings/working/internal/modules/email/types/models'
 
 const props = defineProps<{
@@ -19,6 +20,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'sent'): void
+  // 전송 취소 시간을 쓰는 경우, 실제 발송은 부모가 시간을 두고 처리한다.
+  (e: 'schedule', payload: { accountId: string; message: Message }): void
   (e: 'changed', message: Message): void
 }>()
 
@@ -100,6 +103,13 @@ async function send() {
     subject: subject.value,
     body: body.value,
   }
+  // 전송 취소 시간을 쓰면 여기서 보내지 않고 부모에게 넘긴다.
+  // 부모가 알림을 띄우고 시간이 지난 뒤에 실제로 보낸다.
+  if (undoSendEnabled.value) {
+    emit('schedule', { accountId: account.id, message: msg })
+    return
+  }
+
   sending.value = true
   try {
     await EmailService.Send(account.id, msg)
