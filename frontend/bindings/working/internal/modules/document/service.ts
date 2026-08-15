@@ -24,10 +24,18 @@ export function Backlinks(id: string): $CancellablePromise<types$0.Document[] | 
 /**
  * Create는 새 문서를 만든다.
  * 같은 제목이 이미 있으면 뒤에 번호를 붙여 유일한 제목으로 저장한다.
+ * folderID를 주면 그 폴더 안에 만들고, 비워 두면 폴더 밖에 만든다.
  * 없는 문서로 향하는 링크를 눌렀을 때도 이 메서드로 문서를 만든다.
  */
-export function Create(title: string): $CancellablePromise<types$0.Document | null> {
-    return $Call.ByID(3950882971, title);
+export function Create(title: string, folderID: string, docType: types$0.DocType): $CancellablePromise<types$0.Document | null> {
+    return $Call.ByID(3950882971, title, folderID, docType);
+}
+
+/**
+ * CreateFolder는 새 폴더를 만든다. 같은 이름이 있으면 뒤에 번호를 붙인다.
+ */
+export function CreateFolder(name: string): $CancellablePromise<types$0.Folder | null> {
+    return $Call.ByID(3592454879, name);
 }
 
 /**
@@ -39,10 +47,25 @@ export function Delete(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * DeleteFolder는 폴더를 지운다.
+ * 안에 있던 문서는 함께 지우지 않고 폴더 밖으로 옮긴다.
+ */
+export function DeleteFolder(id: string): $CancellablePromise<void> {
+    return $Call.ByID(3995033660, id);
+}
+
+/**
  * FindByTitle은 제목으로 문서를 찾는다. 대소문자는 무시하며, 없으면 nil을 반환한다.
  */
 export function FindByTitle(title: string): $CancellablePromise<types$0.Document | null> {
     return $Call.ByID(2713743241, title);
+}
+
+/**
+ * Folders는 이름순으로 모든 폴더를 반환한다.
+ */
+export function Folders(): $CancellablePromise<types$0.Folder[] | null> {
+    return $Call.ByID(957327732);
 }
 
 /**
@@ -62,9 +85,32 @@ export function List(): $CancellablePromise<types$0.Document[] | null> {
 }
 
 /**
+ * MoveDocument는 문서를 다른 폴더로 옮긴다. folderID가 비면 폴더 밖으로 뺀다.
+ * 옮기기는 내용 변경이 아니므로 마지막 수정 시각은 건드리지 않는다.
+ */
+export function MoveDocument(id: string, folderID: string): $CancellablePromise<types$0.Document | null> {
+    return $Call.ByID(488859023, id, folderID);
+}
+
+/**
+ * RenameFolder는 폴더 이름을 바꾼다.
+ */
+export function RenameFolder(id: string, name: string): $CancellablePromise<types$0.Folder | null> {
+    return $Call.ByID(3846667425, id, name);
+}
+
+/**
  * Save는 문서의 제목과 본문을 저장한다.
  * 제목이 바뀌면 다른 문서의 [[예전 제목]] 링크도 새 제목으로 함께 고친다.
  */
 export function Save(doc: types$0.Document | null): $CancellablePromise<types$0.Document | null> {
     return $Call.ByID(3739311142, doc);
+}
+
+/**
+ * SetType은 문서를 여는 편집기 형식을 바꾼다.
+ * 본문은 그대로 두므로 마지막 수정 시각도 바꾸지 않는다.
+ */
+export function SetType(id: string, docType: types$0.DocType): $CancellablePromise<types$0.Document | null> {
+    return $Call.ByID(2261232017, id, docType);
 }

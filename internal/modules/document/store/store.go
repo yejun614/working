@@ -12,6 +12,9 @@ import (
 // documentsKey는 문서 목록을 저장하는 SQLite 키이다.
 const documentsKey = "document.documents"
 
+// foldersKey는 폴더 목록을 저장하는 SQLite 키이다.
+const foldersKey = "document.folders"
+
 // Store는 문서 저장소이다.
 type Store struct {
 	db *sql.DB
@@ -59,4 +62,24 @@ func (s *Store) Replace(docs []types.Document) error {
 		docs = []types.Document{}
 	}
 	return storage.PutJSON(s.db, documentsKey, docs)
+}
+
+// AllFolders는 저장된 모든 폴더를 반환한다.
+func (s *Store) AllFolders() ([]types.Folder, error) {
+	var out []types.Folder
+	if _, err := storage.GetJSON(s.db, foldersKey, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []types.Folder{}
+	}
+	return out, nil
+}
+
+// ReplaceFolders는 폴더 목록 전체를 교체한다.
+func (s *Store) ReplaceFolders(folders []types.Folder) error {
+	if folders == nil {
+		folders = []types.Folder{}
+	}
+	return storage.PutJSON(s.db, foldersKey, folders)
 }
