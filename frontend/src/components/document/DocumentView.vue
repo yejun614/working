@@ -317,6 +317,37 @@ type DropPosition = 'before' | 'after' | 'inside'
 const dragged = ref<{ kind: 'folder' | 'document'; id: string } | null>(null)
 const dropHint = ref<{ key: string; position: DropPosition } | null>(null)
 
+// 끌 수 있는 줄은 누른 채 몇 픽셀만 움직여도 브라우저가 끌기를 시작하고
+// click 이벤트를 없앤다. 그래서 줄을 고르는 일은 click이 아니라 누르고 떼는
+// 과정에서 직접 처리한다. 이 정도(px)까지 움직인 것은 클릭으로 본다.
+const DRAG_SLOP = 12
+
+// 누른 지점과, 뗄 때 접거나 펼 폴더. 문서와 달리 폴더는 끌기가 아니라고
+// 판명된 뒤에 접어야 끌고 가는 도중에 하위 항목이 나타나 줄이 밀리지 않는다.
+let pressPoint: { x: number; y: number } | null = null
+let pendingFolder = ''
+
+// 문서는 파일 탐색기처럼 누르는 순간 바로 고른다. 끌어서 옮기려는 경우에도
+// 그 문서가 선택되는 것이 자연스럽다.
+// 버튼 위에서 누른 것은 버튼이 알아서 처리하도록 그냥 넘긴다.
+function onRowPointerDown(row: TreeRow, event: PointerEvent) {
+  pendingFolder = ''
+  pressPoint = null
+  if (event.button !== 0) return
+  if ((event.target as HTMLElement | null)?.closest('button')) return
+
+  pressPoint = { x: event.clientX, y: event.clientY }
+  if (row.kind === 'folder') pendingFolder = row.folder!.id
+  else if (row.kind === 'document') void selectDocument(row.document!.id)
+}
+
+// 끌기가 시작되지 않은 보통의 클릭. 여기서 폴더를 접거나 편다.
+function onRowPointerUp() {
+  if (pendingFolder) toggleFolder(pendingFolder)
+  pendingFolder = ''
+  pressPoint = null
+}
+
 function startDrag(row: TreeRow, event: DragEvent) {
   hidePreview()
   if (row.kind === 'folder') dragged.value = { kind: 'folder', id: row.folder!.id }
@@ -327,7 +358,15 @@ function startDrag(row: TreeRow, event: DragEvent) {
   if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
 }
 
-function endDrag() {
+// 끌기가 시작되면 pointerup 대신 dragend가 온다. 손이 조금 흔들려 끌기로
+// 넘어갔을 뿐이라면 클릭으로 보고 폴더를 접거나 편다.
+function endDrag(event?: DragEvent) {
+  if (pendingFolder && pressPoint && event) {
+    const distance = Math.hypot(event.clientX - pressPoint.x, event.clientY - pressPoint.y)
+    if (distance <= DRAG_SLOP) toggleFolder(pendingFolder)
+  }
+  pendingFolder = ''
+  pressPoint = null
   dragged.value = null
   dropHint.value = null
 }
@@ -852,14 +891,16 @@ onBeforeUnmount(() => {
               ]"
               :style="{ paddingLeft: `${10 + row.depth * 14}px` }"
               :draggable="row.kind !== 'empty'"
+              @pointerdown="onRowPointerDown(row, $event)"
+              @pointerup="onRowPointerUp"
               @dragstart="startDrag(row, $event)"
-              @dragend="endDrag"
+              @dragend="endDrag($event)"
               @dragover.prevent="onRowDragOver(row, $event)"
               @drop.prevent="onRowDrop(row)"
             >
               <!-- 폴더 줄 -->
               <template v-if="row.kind === 'folder'">
-                <div class="row-main" @click="toggleFolder(row.folder!.id)">
+                <div class="row-main">
                   <span class="folder-caret" aria-hidden="true">{{ isCollapsed(row.folder!.id) ? '▸' : '▾' }}</span>
                   <span
                     class="row-name folder-name"
@@ -877,7 +918,6 @@ onBeforeUnmount(() => {
               <template v-else-if="row.kind === 'document'">
                 <div
                   class="row-main"
-                  @click="selectDocument(row.document!.id)"
                   @mouseenter="showPreview(row.document!, $event)"
                   @mouseleave="hidePreview"
                 >
