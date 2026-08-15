@@ -36,8 +36,12 @@ export interface SidePane {
   /** key는 usePaneWidth와 같은 값을 써서 너비와 가시성을 한 패널로 묶는다. */
   key: string
 
-  /** side는 탭 바 버튼에 어느 쪽 패널인지 보여 주는 데 쓴다. */
-  side: 'left' | 'right'
+  /**
+   * icon은 탭 바 버튼에 그릴 글자이다.
+   * 화면 어느 쪽인지보다 그 패널에 무엇이 들어 있는지가 알아보기 쉬우므로,
+   * 내용이 뚜렷한 패널은 위치 기호 대신 그 내용을 나타내는 기호를 쓴다.
+   */
+  icon: string
 
   /** label은 버튼 툴팁에 쓰는 패널 이름이다. */
   label: string
@@ -49,15 +53,16 @@ export interface SidePane {
  */
 export const MODULE_PANES: Partial<Record<ModuleId, SidePane[]>> = {
   calendar: [
-    { key: 'calendar:sidebar', side: 'left', label: '캘린더 목록' },
-    { key: 'calendar:detail', side: 'right', label: '일정 상세' },
+    { key: 'calendar:sidebar', icon: '◧', label: '캘린더 목록' },
+    { key: 'calendar:detail', icon: '◨', label: '일정 상세' },
   ],
   email: [
-    { key: 'email:sidebar', side: 'left', label: '계정·폴더' },
-    { key: 'email:list', side: 'right', label: '메일 목록' },
+    { key: 'email:sidebar', icon: '◧', label: '계정·폴더' },
+    // 메일 목록은 가운데 칸이라 위치 기호를 쓰면 오른쪽 패널로 오해하기 쉽다.
+    { key: 'email:list', icon: '✉', label: '메일 목록' },
   ],
-  kanban: [{ key: 'kanban:sidebar', side: 'left', label: '보드 목록' }],
-  document: [{ key: 'document:sidebar', side: 'left', label: '문서 목록' }],
+  kanban: [{ key: 'kanban:sidebar', icon: '◧', label: '보드 목록' }],
+  document: [{ key: 'document:sidebar', icon: '◧', label: '문서 목록' }],
 }
 
 // 가시성은 탭 바 버튼과 모듈 화면이 함께 보므로 키마다 하나의 ref를 돌려 쓴다.

@@ -75,7 +75,7 @@ function cancelModuleDrag() {
           :aria-pressed="pane.visible.value"
           :title="`${pane.label} 패널 ${pane.visible.value ? '접기' : '펼치기'}`"
           @click="togglePane(pane.key)"
-        >{{ pane.side === 'left' ? '◧' : '◨' }}</button>
+        >{{ pane.icon }}</button>
         <button class="settings-button" @click="showSettings = !showSettings">⚙ 설정</button>
       </div>
     </nav>
@@ -218,18 +218,30 @@ button {
   color: var(--text);
   border-bottom: 2px solid var(--accent);
 }
+/* 탭은 아래 테두리까지 닿아야 하므로 늘어나 있고, 오른쪽 도구 버튼만
+   따로 세로 가운데에 맞춘다. 버튼 높이를 하나로 묶어 가로줄을 맞춘다. */
 .tab-bar-tools {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   margin-left: auto;
+  align-self: center;
+}
+.tab-bar-tools button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
 }
 /* 패널 접기 버튼. 탭과 달리 눌린 상태를 배경으로 표시한다. */
 .pane-button {
-  padding: 6px 9px;
-  border-radius: 6px;
-  font-size: 14px;
-  line-height: 1;
+  width: 30px;
+  padding: 0;
+  font-size: 15px;
 }
 .tab-bar .pane-button.on {
   color: var(--accent);
