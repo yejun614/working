@@ -213,6 +213,20 @@ button {
   font-family: inherit;
   cursor: pointer;
 }
+
+/* 여러 모듈이 함께 쓰는 버튼의 기본 모양. 색과 여백은 각 모듈이 정하므로
+   여기서는 배치와 글자, 누를 때의 반응만 맞춘다. */
+.btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: transform 0.1s ease, opacity 0.2s ease;
+}
+.btn:active { transform: scale(0.97); }
+.btn svg { width: 17px; height: 17px; }
 </style>
 
 <style scoped>
