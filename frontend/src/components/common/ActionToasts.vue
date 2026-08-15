@@ -8,15 +8,19 @@ function remainingSeconds(remaining: number): number {
 </script>
 
 <template>
-  <!-- 되돌릴 수 있는 작업 알림. 화면 오른쪽 아래에 쌓아 둔다. -->
-  <div v-if="pendingActions.length" class="toast-stack" role="status" aria-live="polite">
-    <div v-for="action in pendingActions" :key="action.id" class="toast">
-      <div class="toast-row">
-        <span class="toast-message">{{ action.message }}</span>
-        <span class="toast-remaining">{{ remainingSeconds(action.remaining) }}초</span>
-        <button class="toast-action" type="button" @click="cancelAction(action.id)">{{ action.actionLabel }}</button>
+  <!-- 되돌릴 수 있는 작업 알림. 화면 오른쪽 아래에 쌓아 둔다.
+       클래스 이름에 action- 을 붙인 이유는 public/style.css에 남아 있는
+       템플릿 시절 .toast 규칙(opacity: 0, 화면 위쪽 고정)에 묻히지 않기
+       위해서다. scoped 스타일이라도 우리가 지정하지 않은 속성은 전역 규칙이
+       그대로 먹는다. -->
+  <div v-if="pendingActions.length" class="action-toast-stack" role="status" aria-live="polite">
+    <div v-for="action in pendingActions" :key="action.id" class="action-toast">
+      <div class="action-toast-row">
+        <span class="action-toast-message">{{ action.message }}</span>
+        <span class="action-toast-remaining">{{ remainingSeconds(action.remaining) }}초</span>
+        <button class="action-toast-button" type="button" @click="cancelAction(action.id)">{{ action.actionLabel }}</button>
       </div>
-      <div class="toast-progress" aria-hidden="true">
+      <div class="action-toast-progress" aria-hidden="true">
         <span :style="{ width: `${(action.remaining / action.total) * 100}%` }"></span>
       </div>
     </div>
@@ -24,7 +28,7 @@ function remainingSeconds(remaining: number): number {
 </template>
 
 <style scoped>
-.toast-stack {
+.action-toast-stack {
   position: fixed;
   right: 18px;
   bottom: 18px;
@@ -34,7 +38,7 @@ function remainingSeconds(remaining: number): number {
   gap: 8px;
   max-width: min(420px, calc(100vw - 36px));
 }
-.toast {
+.action-toast {
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -42,15 +46,15 @@ function remainingSeconds(remaining: number): number {
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
   color: var(--text);
 }
-.toast-row {
+.action-toast-row {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
 }
-.toast-message { flex: 1; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
-.toast-remaining { flex: 0 0 auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.toast-action {
+.action-toast-message { flex: 1; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
+.action-toast-remaining { flex: 0 0 auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.action-toast-button {
   flex: 0 0 auto;
   padding: 4px 10px;
   border: 1px solid var(--accent);
@@ -60,8 +64,8 @@ function remainingSeconds(remaining: number): number {
   font-size: 12px;
   white-space: nowrap;
 }
-.toast-action:hover { background: var(--accent); color: var(--on-accent); }
+.action-toast-button:hover { background: var(--accent); color: var(--on-accent); }
 /* 남은 시간을 줄어드는 막대로도 보여 준다. */
-.toast-progress { height: 2px; background: var(--panel-2); }
-.toast-progress span { display: block; height: 100%; background: var(--accent); }
+.action-toast-progress { height: 2px; background: var(--panel-2); }
+.action-toast-progress span { display: block; height: 100%; background: var(--accent); }
 </style>
