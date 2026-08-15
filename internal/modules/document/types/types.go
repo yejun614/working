@@ -27,13 +27,20 @@ func NormalizeType(value DocType) DocType {
 }
 
 // Folder는 문서를 묶는 폴더이다.
-// 폴더 안에 폴더를 두지는 않으며, 문서는 폴더 하나에만 속한다.
+// 폴더 안에 폴더를 둘 수 있고, 문서는 폴더 하나에만 속한다.
 type Folder struct {
 	// ID는 폴더 식별자(자동 생성)이다.
 	ID string `json:"id"`
 
 	// Name은 사이드바에 보이는 폴더 이름이다.
 	Name string `json:"name"`
+
+	// ParentID는 이 폴더를 담고 있는 상위 폴더이다. 비어 있으면 최상위이다.
+	ParentID string `json:"parentId,omitempty"`
+
+	// Order는 같은 상위 폴더 안에서의 정렬 순서다. 작을수록 위에 온다.
+	// 순서를 한 번도 바꾸지 않은 폴더는 0이라 이름순으로 정렬된다.
+	Order int `json:"order,omitempty"`
 
 	// CreatedAt은 생성 시각(RFC3339)이다.
 	CreatedAt string `json:"createdAt,omitempty"`
@@ -54,6 +61,10 @@ type Document struct {
 
 	// FolderID는 문서가 담긴 폴더이다. 비어 있으면 폴더에 넣지 않은 문서다.
 	FolderID string `json:"folderId,omitempty"`
+
+	// Order는 같은 폴더 안에서의 정렬 순서다. 작을수록 위에 온다.
+	// 순서를 한 번도 바꾸지 않은 문서는 0이라 최근 수정순으로 정렬된다.
+	Order int `json:"order,omitempty"`
 
 	// Content는 본문이다. 형식과 무관하게 마크다운 원문으로 보관한다.
 	Content string `json:"content"`

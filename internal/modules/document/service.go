@@ -41,7 +41,8 @@ func NewService() (*Service, error) {
 // ServiceShutdown은 Wails 종료 시 호출되는 훅이다.
 func (s *Service) ServiceShutdown() {}
 
-// List는 최근 수정한 순서로 모든 문서를 반환한다.
+// List는 사이드바에 보여 줄 순서대로 모든 문서를 반환한다.
+// 순서를 바꾼 적이 없으면 Order가 모두 0이라 최근 수정순이 그대로 유지된다.
 // 프론트엔드가 링크 대상이 존재하는지 판단하려면 제목 전체가 필요하므로
 // 목록에도 본문을 함께 담아 보낸다.
 func (s *Service) List() ([]types.Document, error) {
@@ -49,17 +50,37 @@ func (s *Service) List() ([]types.Document, error) {
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(docs, func(i, j int) bool {
-		if docs[i].UpdatedAt != docs[j].UpdatedAt {
-			return docs[i].UpdatedAt > docs[j].UpdatedAt
-		}
-		return docs[i].Title < docs[j].Title
-	})
+	sortDocuments(docs)
 	// 타입을 도입하기 전에 만든 문서에는 값이 없으므로 마크다운으로 채워 보낸다.
 	for i := range docs {
 		docs[i].Type = types.NormalizeType(docs[i].Type)
 	}
 	return docs, nil
+}
+
+// sortDocuments는 문서를 화면에 보이는 순서대로 정렬한다.
+// 폴더별로 나누기 전에 전체를 한 번 정렬해 두면, 프론트엔드가 폴더로 걸러도
+// 형제끼리의 순서가 그대로 유지된다.
+func sortDocuments(docs []types.Document) {
+	sort.SliceStable(docs, func(i, j int) bool {
+		if docs[i].Order != docs[j].Order {
+			return docs[i].Order < docs[j].Order
+		}
+		if docs[i].UpdatedAt != docs[j].UpdatedAt {
+			return docs[i].UpdatedAt > docs[j].UpdatedAt
+		}
+		return docs[i].Title < docs[j].Title
+	})
+}
+
+// sortFolders는 폴더를 화면에 보이는 순서대로 정렬한다.
+func sortFolders(folders []types.Folder) {
+	sort.SliceStable(folders, func(i, j int) bool {
+		if folders[i].Order != folders[j].Order {
+			return folders[i].Order < folders[j].Order
+		}
+		return strings.ToLower(folders[i].Name) < strings.ToLower(folders[j].Name)
+	})
 }
 
 // Get은 ID로 문서를 조회한다.
@@ -103,10 +124,12 @@ func (s *Service) Create(title string, folderID string, docType types.DocType) (
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	doc := types.Document{
-		ID:        newID(),
-		Title:     uniqueTitle(docs, strings.TrimSpace(title), ""),
-		Type:      types.NormalizeType(docType),
-		FolderID:  folderID,
+		ID:       newID(),
+		Title:    uniqueTitle(docs, strings.TrimSpace(title), ""),
+		Type:     types.NormalizeType(docType),
+		FolderID: folderID,
+		// 새 문서는 같은 폴더의 맨 위에 오도록 가장 작은 순서보다 하나 앞에 둔다.
+		Order:     minDocumentOrder(docs, folderID) - 1,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -114,6 +137,17 @@ func (s *Service) Create(title string, folderID string, docType types.DocType) (
 		return nil, err
 	}
 	return &doc, nil
+}
+
+// minDocumentOrder는 폴더 안 문서 중 가장 작은 순서 값을 돌려준다.
+func minDocumentOrder(docs []types.Document, folderID string) int {
+	min := 0
+	for i := range docs {
+		if docs[i].FolderID == folderID && docs[i].Order < min {
+			min = docs[i].Order
+		}
+	}
+	return min
 }
 
 // existingFolderID는 폴더가 실제로 있을 때만 그 ID를 돌려준다.
@@ -244,27 +278,34 @@ func (s *Service) Backlinks(id string) ([]types.Document, error) {
 	return out, nil
 }
 
-// Folders는 이름순으로 모든 폴더를 반환한다.
+// Folders는 사이드바에 보여 줄 순서대로 모든 폴더를 반환한다.
+// 상위 폴더별로 나누기 전에 전체를 한 번 정렬해 두면, 프론트엔드가 상위
+// 폴더로 걸러도 형제끼리의 순서가 그대로 유지된다.
 func (s *Service) Folders() ([]types.Folder, error) {
 	folders, err := s.store.AllFolders()
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(folders, func(i, j int) bool {
-		return strings.ToLower(folders[i].Name) < strings.ToLower(folders[j].Name)
-	})
+	sortFolders(folders)
 	return folders, nil
 }
 
-// CreateFolder는 새 폴더를 만든다. 같은 이름이 있으면 뒤에 번호를 붙인다.
-func (s *Service) CreateFolder(name string) (*types.Folder, error) {
+// CreateFolder는 새 폴더를 만든다. parentID를 주면 그 폴더 안에 만든다.
+// 같은 상위 폴더에 이름이 겹치면 뒤에 번호를 붙인다.
+func (s *Service) CreateFolder(name string, parentID string) (*types.Folder, error) {
 	folders, err := s.store.AllFolders()
 	if err != nil {
 		return nil, err
 	}
+	if !folderExists(folders, parentID) {
+		parentID = ""
+	}
 	folder := types.Folder{
-		ID:        newID(),
-		Name:      uniqueFolderName(folders, strings.TrimSpace(name), ""),
+		ID:       newID(),
+		Name:     uniqueFolderName(folders, strings.TrimSpace(name), parentID, ""),
+		ParentID: parentID,
+		// 새 폴더는 형제들 맨 아래에 붙인다.
+		Order:     maxFolderOrder(folders, parentID) + 1,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := s.store.ReplaceFolders(append(folders, folder)); err != nil {
@@ -283,7 +324,7 @@ func (s *Service) RenameFolder(id string, name string) (*types.Folder, error) {
 		if folders[i].ID != id {
 			continue
 		}
-		folders[i].Name = uniqueFolderName(folders, strings.TrimSpace(name), id)
+		folders[i].Name = uniqueFolderName(folders, strings.TrimSpace(name), folders[i].ParentID, id)
 		if err := s.store.ReplaceFolders(folders); err != nil {
 			return nil, err
 		}
@@ -294,20 +335,34 @@ func (s *Service) RenameFolder(id string, name string) (*types.Folder, error) {
 }
 
 // DeleteFolder는 폴더를 지운다.
-// 안에 있던 문서는 함께 지우지 않고 폴더 밖으로 옮긴다.
+// 안에 있던 하위 폴더와 문서는 함께 지우지 않고 한 단계 위로 끌어올린다.
 func (s *Service) DeleteFolder(id string) error {
 	folders, err := s.store.AllFolders()
 	if err != nil {
 		return err
 	}
-	kept := make([]types.Folder, 0, len(folders))
-	for _, folder := range folders {
-		if folder.ID != id {
-			kept = append(kept, folder)
+	parentID := ""
+	found := false
+	for i := range folders {
+		if folders[i].ID == id {
+			parentID = folders[i].ParentID
+			found = true
+			break
 		}
 	}
-	if len(kept) == len(folders) {
+	if !found {
 		return fmt.Errorf("폴더를 찾을 수 없습니다: %s", id)
+	}
+
+	kept := make([]types.Folder, 0, len(folders))
+	for _, folder := range folders {
+		if folder.ID == id {
+			continue
+		}
+		if folder.ParentID == id {
+			folder.ParentID = parentID
+		}
+		kept = append(kept, folder)
 	}
 	if err := s.store.ReplaceFolders(kept); err != nil {
 		return err
@@ -320,7 +375,7 @@ func (s *Service) DeleteFolder(id string) error {
 	moved := false
 	for i := range docs {
 		if docs[i].FolderID == id {
-			docs[i].FolderID = ""
+			docs[i].FolderID = parentID
 			moved = true
 		}
 	}
@@ -330,9 +385,10 @@ func (s *Service) DeleteFolder(id string) error {
 	return s.store.Replace(docs)
 }
 
-// MoveDocument는 문서를 다른 폴더로 옮긴다. folderID가 비면 폴더 밖으로 뺀다.
+// MoveDocument는 문서를 다른 폴더의 원하는 자리로 옮긴다.
+// folderID가 비면 폴더 밖으로 빼고, index는 그 폴더 안에서 몇 번째에 둘지다.
 // 옮기기는 내용 변경이 아니므로 마지막 수정 시각은 건드리지 않는다.
-func (s *Service) MoveDocument(id string, folderID string) (*types.Document, error) {
+func (s *Service) MoveDocument(id string, folderID string, index int) (*types.Document, error) {
 	folderID, err := s.existingFolderID(folderID)
 	if err != nil {
 		return nil, err
@@ -341,22 +397,148 @@ func (s *Service) MoveDocument(id string, folderID string) (*types.Document, err
 	if err != nil {
 		return nil, err
 	}
+	sortDocuments(docs)
+
+	moved := -1
 	for i := range docs {
-		if docs[i].ID != id {
-			continue
+		if docs[i].ID == id {
+			moved = i
+			break
 		}
-		if docs[i].FolderID == folderID {
-			moved := docs[i]
-			return &moved, nil
-		}
-		docs[i].FolderID = folderID
-		if err := s.store.Replace(docs); err != nil {
-			return nil, err
-		}
-		moved := docs[i]
-		return &moved, nil
 	}
-	return nil, fmt.Errorf("문서를 찾을 수 없습니다: %s", id)
+	if moved < 0 {
+		return nil, fmt.Errorf("문서를 찾을 수 없습니다: %s", id)
+	}
+	docs[moved].FolderID = folderID
+
+	// 옮긴 문서를 뺀 형제 목록에 원하는 자리로 다시 끼워 넣고 순서를 다시 매긴다.
+	siblings := make([]int, 0, len(docs))
+	for i := range docs {
+		if i != moved && docs[i].FolderID == folderID {
+			siblings = append(siblings, i)
+		}
+	}
+	if index < 0 {
+		index = 0
+	}
+	if index > len(siblings) {
+		index = len(siblings)
+	}
+	ordered := make([]int, 0, len(siblings)+1)
+	ordered = append(ordered, siblings[:index]...)
+	ordered = append(ordered, moved)
+	ordered = append(ordered, siblings[index:]...)
+	for order, i := range ordered {
+		docs[i].Order = order
+	}
+
+	if err := s.store.Replace(docs); err != nil {
+		return nil, err
+	}
+	result := docs[moved]
+	return &result, nil
+}
+
+// MoveFolder는 폴더를 다른 상위 폴더의 원하는 자리로 옮긴다.
+// 자기 자신이나 자기 하위 폴더 안으로는 옮길 수 없다.
+func (s *Service) MoveFolder(id string, parentID string, index int) (*types.Folder, error) {
+	folders, err := s.store.AllFolders()
+	if err != nil {
+		return nil, err
+	}
+	sortFolders(folders)
+
+	moved := -1
+	for i := range folders {
+		if folders[i].ID == id {
+			moved = i
+			break
+		}
+	}
+	if moved < 0 {
+		return nil, fmt.Errorf("폴더를 찾을 수 없습니다: %s", id)
+	}
+	if !folderExists(folders, parentID) {
+		parentID = ""
+	}
+	// 자기 하위로 들어가면 트리가 끊겨 어디에도 보이지 않게 되므로 막는다.
+	if parentID == id || isDescendantFolder(folders, parentID, id) {
+		return nil, fmt.Errorf("폴더를 자기 자신이나 하위 폴더 안으로 옮길 수 없습니다")
+	}
+
+	previousParent := folders[moved].ParentID
+	folders[moved].ParentID = parentID
+	if previousParent != parentID {
+		folders[moved].Name = uniqueFolderName(folders, folders[moved].Name, parentID, id)
+	}
+
+	siblings := make([]int, 0, len(folders))
+	for i := range folders {
+		if i != moved && folders[i].ParentID == parentID {
+			siblings = append(siblings, i)
+		}
+	}
+	if index < 0 {
+		index = 0
+	}
+	if index > len(siblings) {
+		index = len(siblings)
+	}
+	ordered := make([]int, 0, len(siblings)+1)
+	ordered = append(ordered, siblings[:index]...)
+	ordered = append(ordered, moved)
+	ordered = append(ordered, siblings[index:]...)
+	for order, i := range ordered {
+		folders[i].Order = order
+	}
+
+	if err := s.store.ReplaceFolders(folders); err != nil {
+		return nil, err
+	}
+	result := folders[moved]
+	return &result, nil
+}
+
+// folderExists는 그 ID의 폴더가 있는지 알려준다. 빈 ID(최상위)는 항상 참이다.
+func folderExists(folders []types.Folder, id string) bool {
+	if id == "" {
+		return true
+	}
+	for i := range folders {
+		if folders[i].ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// isDescendantFolder는 candidate가 ancestor의 하위 폴더인지 확인한다.
+func isDescendantFolder(folders []types.Folder, candidate, ancestor string) bool {
+	parentOf := make(map[string]string, len(folders))
+	for i := range folders {
+		parentOf[folders[i].ID] = folders[i].ParentID
+	}
+	// 데이터가 어쩌다 순환하더라도 멈추도록 방문한 폴더를 기록한다.
+	seen := make(map[string]bool, len(folders))
+	for candidate != "" && !seen[candidate] {
+		if candidate == ancestor {
+			return true
+		}
+		seen[candidate] = true
+		candidate = parentOf[candidate]
+	}
+	return false
+}
+
+// maxFolderOrder는 상위 폴더 안 폴더 중 가장 큰 순서 값을 돌려준다.
+func maxFolderOrder(folders []types.Folder, parentID string) int {
+	max := 0
+	for i := range folders {
+		if folders[i].ParentID == parentID && folders[i].Order > max {
+			max = folders[i].Order
+		}
+	}
+	return max
 }
 
 // SetType은 문서를 여는 편집기 형식을 바꾼다.
@@ -380,14 +562,18 @@ func (s *Service) SetType(id string, docType types.DocType) (*types.Document, er
 	return nil, fmt.Errorf("문서를 찾을 수 없습니다: %s", id)
 }
 
-// uniqueFolderName은 겹치지 않는 폴더 이름을 만든다. 이미 있으면 " 2", " 3"을 붙인다.
-func uniqueFolderName(folders []types.Folder, name, exceptID string) string {
+// uniqueFolderName은 같은 상위 폴더 안에서 겹치지 않는 이름을 만든다.
+// 이미 있으면 " 2", " 3"을 붙인다. 다른 폴더 안이라면 같은 이름을 써도 된다.
+func uniqueFolderName(folders []types.Folder, name, parentID, exceptID string) string {
 	if name == "" {
 		name = defaultFolderName
 	}
 	taken := func(candidate string) bool {
 		target := normalizeTitle(candidate)
 		for i := range folders {
+			if folders[i].ParentID != parentID {
+				continue
+			}
 			if folders[i].ID != exceptID && normalizeTitle(folders[i].Name) == target {
 				return true
 			}

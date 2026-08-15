@@ -32,10 +32,11 @@ export function Create(title: string, folderID: string, docType: types$0.DocType
 }
 
 /**
- * CreateFolder는 새 폴더를 만든다. 같은 이름이 있으면 뒤에 번호를 붙인다.
+ * CreateFolder는 새 폴더를 만든다. parentID를 주면 그 폴더 안에 만든다.
+ * 같은 상위 폴더에 이름이 겹치면 뒤에 번호를 붙인다.
  */
-export function CreateFolder(name: string): $CancellablePromise<types$0.Folder | null> {
-    return $Call.ByID(3592454879, name);
+export function CreateFolder(name: string, parentID: string): $CancellablePromise<types$0.Folder | null> {
+    return $Call.ByID(3592454879, name, parentID);
 }
 
 /**
@@ -48,7 +49,7 @@ export function Delete(id: string): $CancellablePromise<void> {
 
 /**
  * DeleteFolder는 폴더를 지운다.
- * 안에 있던 문서는 함께 지우지 않고 폴더 밖으로 옮긴다.
+ * 안에 있던 하위 폴더와 문서는 함께 지우지 않고 한 단계 위로 끌어올린다.
  */
 export function DeleteFolder(id: string): $CancellablePromise<void> {
     return $Call.ByID(3995033660, id);
@@ -62,7 +63,9 @@ export function FindByTitle(title: string): $CancellablePromise<types$0.Document
 }
 
 /**
- * Folders는 이름순으로 모든 폴더를 반환한다.
+ * Folders는 사이드바에 보여 줄 순서대로 모든 폴더를 반환한다.
+ * 상위 폴더별로 나누기 전에 전체를 한 번 정렬해 두면, 프론트엔드가 상위
+ * 폴더로 걸러도 형제끼리의 순서가 그대로 유지된다.
  */
 export function Folders(): $CancellablePromise<types$0.Folder[] | null> {
     return $Call.ByID(957327732);
@@ -76,7 +79,8 @@ export function Get(id: string): $CancellablePromise<types$0.Document | null> {
 }
 
 /**
- * List는 최근 수정한 순서로 모든 문서를 반환한다.
+ * List는 사이드바에 보여 줄 순서대로 모든 문서를 반환한다.
+ * 순서를 바꾼 적이 없으면 Order가 모두 0이라 최근 수정순이 그대로 유지된다.
  * 프론트엔드가 링크 대상이 존재하는지 판단하려면 제목 전체가 필요하므로
  * 목록에도 본문을 함께 담아 보낸다.
  */
@@ -85,11 +89,20 @@ export function List(): $CancellablePromise<types$0.Document[] | null> {
 }
 
 /**
- * MoveDocument는 문서를 다른 폴더로 옮긴다. folderID가 비면 폴더 밖으로 뺀다.
+ * MoveDocument는 문서를 다른 폴더의 원하는 자리로 옮긴다.
+ * folderID가 비면 폴더 밖으로 빼고, index는 그 폴더 안에서 몇 번째에 둘지다.
  * 옮기기는 내용 변경이 아니므로 마지막 수정 시각은 건드리지 않는다.
  */
-export function MoveDocument(id: string, folderID: string): $CancellablePromise<types$0.Document | null> {
-    return $Call.ByID(488859023, id, folderID);
+export function MoveDocument(id: string, folderID: string, index: number): $CancellablePromise<types$0.Document | null> {
+    return $Call.ByID(488859023, id, folderID, index);
+}
+
+/**
+ * MoveFolder는 폴더를 다른 상위 폴더의 원하는 자리로 옮긴다.
+ * 자기 자신이나 자기 하위 폴더 안으로는 옮길 수 없다.
+ */
+export function MoveFolder(id: string, parentID: string, index: number): $CancellablePromise<types$0.Folder | null> {
+    return $Call.ByID(2169345850, id, parentID, index);
 }
 
 /**
