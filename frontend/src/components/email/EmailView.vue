@@ -8,13 +8,20 @@ import { isDarkMode } from '../../theme'
 import { canSendMail } from '../../accounts'
 import { copyText } from '../../clipboard'
 import ResizeHandle from '../common/ResizeHandle.vue'
-import { usePaneWidth } from '../../panes'
+import { usePaneVisible, usePaneWidth } from '../../panes'
 
 const sidebarWidth = usePaneWidth('email:sidebar', 240)
 const listWidth = usePaneWidth('email:list', 320)
-const layoutColumns = computed(() => ({
-  gridTemplateColumns: `${sidebarWidth.value}px auto ${listWidth.value}px auto minmax(0, 1fr)`,
-}))
+// 탭 바의 패널 버튼으로 계정·폴더 칸과 메일 목록 칸을 각각 접을 수 있다.
+const sidebarVisible = usePaneVisible('email:sidebar')
+const listVisible = usePaneVisible('email:list')
+const layoutColumns = computed(() => {
+  const columns: string[] = []
+  if (sidebarVisible.value) columns.push(`${sidebarWidth.value}px`, 'auto')
+  if (listVisible.value) columns.push(`${listWidth.value}px`, 'auto')
+  columns.push('minmax(0, 1fr)')
+  return { gridTemplateColumns: columns.join(' ') }
+})
 
 const accounts = ref<Account[]>([])
 const selectedAccountId = ref<string>('')
@@ -595,7 +602,7 @@ onMounted(() => {
 
 <template>
   <div class="layout" :style="layoutColumns">
-    <aside class="sidebar">
+    <aside v-if="sidebarVisible" class="sidebar">
       <div class="sidebar-header">
         <h1>이메일</h1>
       </div>
@@ -635,13 +642,14 @@ onMounted(() => {
     </aside>
 
     <ResizeHandle
+      v-if="sidebarVisible"
       v-model:width="sidebarWidth"
       :min="180"
       :max="420"
       label="메일함 목록 너비 조절"
     />
 
-    <section class="list-pane">
+    <section v-if="listVisible" class="list-pane">
       <div class="list-header">
         <div class="list-title">
           {{ selectedFolder }}
@@ -719,6 +727,7 @@ onMounted(() => {
     </section>
 
     <ResizeHandle
+      v-if="listVisible"
       v-model:width="listWidth"
       :min="240"
       :max="640"

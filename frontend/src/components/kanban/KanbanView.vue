@@ -3,11 +3,15 @@ import { computed, onMounted, ref } from 'vue'
 import { Service as KanbanService } from '../../../bindings/working/internal/modules/kanban'
 import type { Board, Card, Column } from '../../../bindings/working/internal/modules/kanban/types/models'
 import ResizeHandle from '../common/ResizeHandle.vue'
-import { usePaneWidth } from '../../panes'
+import { usePaneVisible, usePaneWidth } from '../../panes'
 
 const sidebarWidth = usePaneWidth('kanban:sidebar', 220)
+// 탭 바의 패널 버튼으로 접을 수 있다. 접으면 칸을 아예 없애 본문이 넓어진다.
+const sidebarVisible = usePaneVisible('kanban:sidebar')
 const layoutColumns = computed(() => ({
-  gridTemplateColumns: `${sidebarWidth.value}px auto minmax(0, 1fr)`,
+  gridTemplateColumns: sidebarVisible.value
+    ? `${sidebarWidth.value}px auto minmax(0, 1fr)`
+    : 'minmax(0, 1fr)',
 }))
 
 const boards = ref<Board[]>([])
@@ -227,7 +231,7 @@ onMounted(loadBoards)
 
 <template>
   <div class="kanban-layout" :style="layoutColumns">
-    <aside class="kanban-sidebar">
+    <aside v-if="sidebarVisible" class="kanban-sidebar">
       <div class="side-heading"><h1>칸반</h1><button class="icon-btn" title="보드 추가" @click="createBoard">+</button></div>
       <div class="side-label">보드</div>
       <button v-for="board in boards" :key="board.id" class="board-item" :class="{ active: board.id === selectedBoardId }" @click="selectedBoardId = board.id; refresh()">{{ board.name }}</button>
@@ -235,6 +239,7 @@ onMounted(loadBoards)
     </aside>
 
     <ResizeHandle
+      v-if="sidebarVisible"
       v-model:width="sidebarWidth"
       :min="170"
       :max="420"

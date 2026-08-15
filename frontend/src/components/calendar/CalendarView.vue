@@ -8,13 +8,19 @@ import type { Account } from '../../../bindings/working/internal/modules/account
 import type { Event, CalendarInfo } from '../../../bindings/working/internal/modules/calendar/types/models'
 import EventForm from './EventForm.vue'
 import ResizeHandle from '../common/ResizeHandle.vue'
-import { usePaneWidth } from '../../panes'
+import { usePaneVisible, usePaneWidth } from '../../panes'
 
 const sidebarWidth = usePaneWidth('calendar:sidebar', 220)
 const detailWidth = usePaneWidth('calendar:detail', 300)
-const layoutColumns = computed(() => ({
-  gridTemplateColumns: `${sidebarWidth.value}px auto minmax(0, 1fr) auto ${detailWidth.value}px`,
-}))
+// 탭 바의 패널 버튼으로 좌우 패널을 각각 접을 수 있다.
+const sidebarVisible = usePaneVisible('calendar:sidebar')
+const detailVisible = usePaneVisible('calendar:detail')
+const layoutColumns = computed(() => {
+  const columns = ['minmax(0, 1fr)']
+  if (sidebarVisible.value) columns.unshift(`${sidebarWidth.value}px`, 'auto')
+  if (detailVisible.value) columns.push('auto', `${detailWidth.value}px`)
+  return { gridTemplateColumns: columns.join(' ') }
+})
 
 const accounts = ref<Account[]>([])
 type DisplayCalendar = CalendarInfo & { accountId: string; displayColor: string }
@@ -566,7 +572,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="layout" :style="layoutColumns">
-    <aside class="sidebar">
+    <aside v-if="sidebarVisible" class="sidebar">
       <div class="sidebar-header">
         <h1>캘린더</h1>
       </div>
@@ -621,6 +627,7 @@ onBeforeUnmount(() => {
     </aside>
 
     <ResizeHandle
+      v-if="sidebarVisible"
       v-model:width="sidebarWidth"
       :min="170"
       :max="420"
@@ -673,6 +680,7 @@ onBeforeUnmount(() => {
     </section>
 
     <ResizeHandle
+      v-if="detailVisible"
       v-model:width="detailWidth"
       side="right"
       :min="220"
@@ -680,7 +688,7 @@ onBeforeUnmount(() => {
       label="일정 상세 너비 조절"
     />
 
-    <section class="detail-pane">
+    <section v-if="detailVisible" class="detail-pane">
       <div class="detail-header">
         <span class="detail-date">{{ selectedDate }}</span>
         <button class="btn primary sm" @click="openNewEvent(selectedDate)">+ 일정</button>

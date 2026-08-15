@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { applyTheme, isDarkMode } from './theme'
+import { MODULE_PANES, togglePane, usePaneVisible } from './panes'
 import {
   canDisableModule,
   enabledModules,
@@ -28,6 +29,11 @@ watch(enabledModules, (modules) => {
     activeModule.value = modules[0].id
   }
 })
+
+// 지금 보고 있는 모듈이 가진 측면 패널. 탭 바 오른쪽에 접기 버튼으로 그린다.
+const activePanes = computed(() =>
+  (MODULE_PANES[activeModule.value] ?? []).map((pane) => ({ ...pane, visible: usePaneVisible(pane.key) })),
+)
 
 const draggedModule = ref<ModuleId | null>(null)
 const dropTargetModule = ref<ModuleId | null>(null)
@@ -59,7 +65,19 @@ function cancelModuleDrag() {
         :class="{ active: activeModule === module.id }"
         @click="activeModule = module.id"
       >{{ module.label }}</button>
-      <button class="settings-button" @click="showSettings = !showSettings">⚙ 설정</button>
+      <div class="tab-bar-tools">
+        <!-- 패널 접기 버튼은 지금 보고 있는 모듈이 가진 패널만 보여 준다. -->
+        <button
+          v-for="pane in activePanes"
+          :key="pane.key"
+          class="pane-button"
+          :class="{ on: pane.visible.value }"
+          :aria-pressed="pane.visible.value"
+          :title="`${pane.label} 패널 ${pane.visible.value ? '접기' : '펼치기'}`"
+          @click="togglePane(pane.key)"
+        >{{ pane.side === 'left' ? '◧' : '◨' }}</button>
+        <button class="settings-button" @click="showSettings = !showSettings">⚙ 설정</button>
+      </div>
     </nav>
     <section v-if="showSettings" class="settings-panel" aria-label="앱 설정">
       <label class="setting-row">
@@ -200,8 +218,22 @@ button {
   color: var(--text);
   border-bottom: 2px solid var(--accent);
 }
-.settings-button {
+.tab-bar-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   margin-left: auto;
+}
+/* 패널 접기 버튼. 탭과 달리 눌린 상태를 배경으로 표시한다. */
+.pane-button {
+  padding: 6px 9px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1;
+}
+.tab-bar .pane-button.on {
+  color: var(--accent);
+  background: var(--panel-2);
 }
 .settings-panel {
   position: absolute;
