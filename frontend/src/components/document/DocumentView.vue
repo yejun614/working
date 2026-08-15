@@ -36,17 +36,28 @@ const folders = ref<Folder[]>([])
 const selectedId = ref('')
 const titleInput = ref('')
 const filter = ref('')
-const error = ref('')
-const saveState = ref<'idle' | 'saving' | 'saved'>('idle')
 
 const editorElement = ref<HTMLElement | null>(null)
 let editor: Editor | null = null
 // setMarkdown이 change 이벤트를 다시 일으키므로, 문서를 불러오는 동안은 저장하지 않는다.
 let loadingDocument = false
 let saveTimer: ReturnType<typeof setTimeout> | undefined
-let saveStateTimer: ReturnType<typeof setTimeout> | undefined
 
 const selectedDocument = computed(() => documents.value.find(d => d.id === selectedId.value) || null)
+
+/* ---------- 오류 알림 ---------- */
+
+// 자동 저장은 눈에 띄지 않게 흘러가므로, 실패했을 때만 모달로 분명히 알린다.
+// 저장 말고 다른 작업의 실패도 같은 곳에서 보여 준다.
+const errorMessage = ref('')
+
+function reportError(e: unknown) {
+  errorMessage.value = e instanceof Error ? e.message : String(e)
+}
+
+function closeError() {
+  errorMessage.value = ''
+}
 
 /* ---------- 문서 형식 ---------- */
 
@@ -128,7 +139,7 @@ async function changeType(next: DocType) {
     const saved = await DocumentService.SetType(current.id, next)
     if (saved) replaceInList(saved)
   } catch (e) {
-    error.value = (e as Error).message
+    reportError(e)
   }
 }
 
@@ -137,7 +148,7 @@ function onPlainInput() {
   scheduleSave()
 }
 
-/* ---------- 폴더 ---------- */
+/* ---------- 폴더 트리 ---------- */
 
 const COLLAPSED_KEY = 'working:document-collapsed-folders'
 
@@ -157,10 +168,7 @@ function isCollapsed(id: string): boolean {
   return collapsedFolders.value.includes(id)
 }
 
-function toggleFolder(id: string) {
-  collapsedFolders.value = isCollapsed(id)
-    ? collapsedFolders.value.filter(item => item !== id)
-    : [...collapsedFolders.value, id]
+function rememberCollapsed() {
   try {
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsedFolders.value))
   } catch {
@@ -168,18 +176,82 @@ function toggleFolder(id: string) {
   }
 }
 
-// 폴더별로 담긴 문서. 목록은 이미 최근 수정순이라 그대로 나눠 담기만 한다.
-const folderGroups = computed(() =>
-  folders.value.map(folder => ({
-    folder,
-    documents: documents.value.filter(doc => doc.folderId === folder.id),
-  })),
-)
+function toggleFolder(id: string) {
+  collapsedFolders.value = isCollapsed(id)
+    ? collapsedFolders.value.filter(item => item !== id)
+    : [...collapsedFolders.value, id]
+  rememberCollapsed()
+}
 
-// 폴더에 넣지 않은 문서. 지워진 폴더를 가리키는 문서도 여기로 모은다.
-const rootDocuments = computed(() =>
-  documents.value.filter(doc => !doc.folderId || !folders.value.some(f => f.id === doc.folderId)),
-)
+function expandFolder(id: string) {
+  if (!id || !isCollapsed(id)) return
+  collapsedFolders.value = collapsedFolders.value.filter(item => item !== id)
+  rememberCollapsed()
+}
+
+const folderIds = computed(() => new Set(folders.value.map(folder => folder.id)))
+
+// 없는 폴더를 가리키는 값은 최상위로 본다. 목록을 다시 받기 전에도 화면이 깨지지 않는다.
+function parentOf(folder: Folder): string {
+  return folder.parentId && folderIds.value.has(folder.parentId) ? folder.parentId : ''
+}
+
+function folderOf(doc: Document): string {
+  return doc.folderId && folderIds.value.has(doc.folderId) ? doc.folderId : ''
+}
+
+// 백엔드가 이미 형제 순서대로 정렬해 보내므로 걸러 내기만 하면 순서가 유지된다.
+function childFolders(parentId: string): Folder[] {
+  return folders.value.filter(folder => parentOf(folder) === parentId)
+}
+
+function childDocuments(folderId: string): Document[] {
+  return documents.value.filter(doc => folderOf(doc) === folderId)
+}
+
+// 트리는 한 줄짜리 목록으로 펼쳐 그린다. 깊이는 들여쓰기로만 나타내므로
+// 재귀 컴포넌트 없이도 폴더 안 폴더를 얼마든지 표현할 수 있고,
+// 끌어 놓을 자리를 계산하기도 쉽다.
+type RowKind = 'folder' | 'document' | 'empty'
+
+interface TreeRow {
+  key: string
+  kind: RowKind
+  depth: number
+  folder?: Folder
+  document?: Document
+}
+
+function collectRows(parentId: string, depth: number, out: TreeRow[]) {
+  for (const folder of childFolders(parentId)) {
+    out.push({ key: `f:${folder.id}`, kind: 'folder', depth, folder })
+    if (isCollapsed(folder.id)) continue
+    collectRows(folder.id, depth + 1, out)
+    const docs = childDocuments(folder.id)
+    for (const doc of docs) {
+      out.push({ key: `d:${doc.id}`, kind: 'document', depth: depth + 1, document: doc })
+    }
+    if (!docs.length && !childFolders(folder.id).length) {
+      out.push({ key: `e:${folder.id}`, kind: 'empty', depth: depth + 1, folder })
+    }
+  }
+}
+
+const treeRows = computed(() => {
+  const out: TreeRow[] = []
+  collectRows('', 0, out)
+  for (const doc of childDocuments('')) {
+    out.push({ key: `d:${doc.id}`, kind: 'document', depth: 0, document: doc })
+  }
+  return out
+})
+
+// 폴더 안 문서 수는 하위 폴더까지 합쳐 센다.
+function folderCount(id: string): number {
+  let total = childDocuments(id).length
+  for (const child of childFolders(id)) total += folderCount(child.id)
+  return total
+}
 
 // 검색 중에는 폴더 구분을 접고 결과만 한 줄로 보여 준다.
 const searchResults = computed(() => {
@@ -196,18 +268,19 @@ async function refreshFolders() {
   try {
     folders.value = (await DocumentService.Folders()) || []
   } catch (e) {
-    error.value = (e as Error).message
+    reportError(e)
   }
 }
 
-async function createFolder() {
-  const name = prompt('새 폴더 이름')
+async function createFolder(parentId = '') {
+  const name = prompt(parentId ? '새 하위 폴더 이름' : '새 폴더 이름')
   if (name === null) return
   try {
-    await DocumentService.CreateFolder(name.trim())
+    await DocumentService.CreateFolder(name.trim(), parentId)
+    expandFolder(parentId)
     await refreshFolders()
   } catch (e) {
-    error.value = (e as Error).message
+    reportError(e)
   }
 }
 
@@ -220,60 +293,164 @@ async function renameFolder(folder: Folder) {
     await DocumentService.RenameFolder(folder.id, trimmed)
     await refreshFolders()
   } catch (e) {
-    error.value = (e as Error).message
+    reportError(e)
   }
 }
 
 async function deleteFolder(folder: Folder) {
-  if (!confirm(`폴더 "${folder.name}" 을(를) 지울까요?\n안에 있던 문서는 지워지지 않고 폴더 밖으로 나옵니다.`)) return
+  if (!confirm(`폴더 "${folder.name}" 을(를) 지울까요?\n안에 있던 하위 폴더와 문서는 지워지지 않고 한 단계 위로 나옵니다.`)) return
   try {
     await DocumentService.DeleteFolder(folder.id)
-    await refreshFolders()
+    await refreshTree()
+  } catch (e) {
+    reportError(e)
+  }
+}
+
+/* ---------- 끌어 놓기로 옮기기 ---------- */
+
+// 문서와 폴더를 끌어서 다른 폴더로 옮기거나 형제끼리 순서를 바꾼다.
+// 줄의 위/아래 가장자리에 놓으면 그 자리에 끼워 넣고, 폴더 줄 가운데에
+// 놓으면 그 폴더 안으로 들어간다.
+type DropPosition = 'before' | 'after' | 'inside'
+
+const dragged = ref<{ kind: 'folder' | 'document'; id: string } | null>(null)
+const dropHint = ref<{ key: string; position: DropPosition } | null>(null)
+
+function startDrag(row: TreeRow, event: DragEvent) {
+  hidePreview()
+  if (row.kind === 'folder') dragged.value = { kind: 'folder', id: row.folder!.id }
+  else if (row.kind === 'document') dragged.value = { kind: 'document', id: row.document!.id }
+  else return
+  // 일부 브라우저는 데이터가 없으면 끌기를 시작하지 않는다.
+  event.dataTransfer?.setData('text/plain', dragged.value.id)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+function endDrag() {
+  dragged.value = null
+  dropHint.value = null
+}
+
+// 폴더를 자기 하위로 옮기면 트리가 끊기므로 미리 막는다.
+function isDescendantFolder(candidateId: string, ancestorId: string): boolean {
+  const parents = new Map(folders.value.map(folder => [folder.id, parentOf(folder)]))
+  const seen = new Set<string>()
+  let current = candidateId
+  while (current && !seen.has(current)) {
+    if (current === ancestorId) return true
+    seen.add(current)
+    current = parents.get(current) ?? ''
+  }
+  return false
+}
+
+// 이 줄의 어느 높이에 놓았는지로 무엇을 하려는지 정한다.
+function dropIntent(row: TreeRow, ratio: number): DropPosition | null {
+  const item = dragged.value
+  if (!item) return null
+
+  if (row.kind === 'empty') {
+    return item.kind === 'document' || !isDescendantFolder(row.folder!.id, item.id) ? 'inside' : null
+  }
+
+  if (row.kind === 'folder') {
+    const folder = row.folder!
+    if (item.kind === 'folder') {
+      if (folder.id === item.id) return null
+      if (isDescendantFolder(folder.id, item.id)) return null
+      return ratio < 0.3 ? 'before' : ratio > 0.7 ? 'after' : 'inside'
+    }
+    // 문서는 폴더 줄 어디에 놓아도 그 폴더 안으로 들어간다.
+    return 'inside'
+  }
+
+  // 문서 줄에는 문서만 앞뒤로 끼워 넣는다.
+  if (item.kind !== 'document' || row.document!.id === item.id) return null
+  return ratio < 0.5 ? 'before' : 'after'
+}
+
+function onRowDragOver(row: TreeRow, event: DragEvent) {
+  if (!dragged.value) return
+  const element = event.currentTarget as HTMLElement
+  const rect = element.getBoundingClientRect()
+  const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5
+  const position = dropIntent(row, ratio)
+  dropHint.value = position ? { key: row.key, position } : null
+  if (event.dataTransfer) event.dataTransfer.dropEffect = position ? 'move' : 'none'
+}
+
+async function onRowDrop(row: TreeRow) {
+  const item = dragged.value
+  const hint = dropHint.value
+  endDrag()
+  if (!item || !hint || hint.key !== row.key) return
+
+  if (item.kind === 'document') {
+    if (hint.position === 'inside') {
+      const folderId = row.folder!.id
+      expandFolder(folderId)
+      await moveDocument(item.id, folderId, childDocuments(folderId).length)
+      return
+    }
+    const target = row.document!
+    const folderId = folderOf(target)
+    const siblings = childDocuments(folderId).filter(doc => doc.id !== item.id)
+    const at = siblings.findIndex(doc => doc.id === target.id)
+    const index = at < 0 ? siblings.length : hint.position === 'after' ? at + 1 : at
+    await moveDocument(item.id, folderId, index)
+    return
+  }
+
+  if (hint.position === 'inside') {
+    const parentId = row.folder!.id
+    expandFolder(parentId)
+    await moveFolder(item.id, parentId, childFolders(parentId).length)
+    return
+  }
+  const target = row.folder!
+  const parentId = parentOf(target)
+  const siblings = childFolders(parentId).filter(folder => folder.id !== item.id)
+  const at = siblings.findIndex(folder => folder.id === target.id)
+  const index = at < 0 ? siblings.length : hint.position === 'after' ? at + 1 : at
+  await moveFolder(item.id, parentId, index)
+}
+
+function onRootDragOver(event: DragEvent) {
+  if (!dragged.value) return
+  dropHint.value = { key: 'root', position: 'inside' }
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+}
+
+async function onRootDrop() {
+  const item = dragged.value
+  endDrag()
+  if (!item) return
+  if (item.kind === 'document') await moveDocument(item.id, '', childDocuments('').length)
+  else await moveFolder(item.id, '', childFolders('').length)
+}
+
+// 순서를 바꾸면 형제 전체의 순서가 다시 매겨지므로 목록을 다시 받아 온다.
+async function moveDocument(id: string, folderId: string, index: number) {
+  try {
+    await DocumentService.MoveDocument(id, folderId, index)
     await refreshDocuments()
   } catch (e) {
-    error.value = (e as Error).message
+    reportError(e)
   }
 }
 
-/* ---------- 문서 옮기기 ---------- */
-
-// 문서를 끌어 폴더에 놓으면 그 폴더로 옮긴다. 폴더 밖 영역에 놓으면 폴더에서 뺀다.
-const draggedDocumentId = ref('')
-// 놓을 자리 표시. 빈 문자열은 폴더 밖 영역이고, null은 놓을 곳이 없다는 뜻이다.
-const dropTarget = ref<string | null>(null)
-
-function startDocumentDrag(doc: Document) {
-  hidePreview()
-  draggedDocumentId.value = doc.id
-}
-
-function previewDrop(folderId: string) {
-  if (!draggedDocumentId.value) return
-  dropTarget.value = folderId
-}
-
-function endDocumentDrag() {
-  draggedDocumentId.value = ''
-  dropTarget.value = null
-}
-
-async function dropOnFolder(folderId: string) {
-  const id = draggedDocumentId.value
-  endDocumentDrag()
-  if (!id) return
-  const doc = documents.value.find(item => item.id === id)
-  if (!doc || (doc.folderId || '') === folderId) return
-  await moveDocument(id, folderId)
-}
-
-// 끌어 놓기 말고 문서 정보 모달에서도 폴더를 고를 수 있게 같은 동작을 함수로 둔다.
-async function moveDocument(id: string, folderId: string) {
+async function moveFolder(id: string, parentId: string, index: number) {
   try {
-    const moved = await DocumentService.MoveDocument(id, folderId)
-    if (moved) replaceInList(moved)
+    await DocumentService.MoveFolder(id, parentId, index)
+    await refreshFolders()
   } catch (e) {
-    error.value = (e as Error).message
+    reportError(e)
   }
+}
+
+async function refreshTree() {
+  await Promise.all([refreshDocuments(), refreshFolders()])
 }
 
 /* ---------- 위키 링크 ---------- */
@@ -370,7 +547,7 @@ watch(isDarkMode, () => {
 /* ---------- 목록/문서 ---------- */
 
 // replaceInList는 목록 안의 문서 하나만 갈아 끼운다.
-// 목록 전체를 다시 받으면 편집 흐름이 끊기므로 저장·이동 뒤에는 이 방법을 쓴다.
+// 목록 전체를 다시 받으면 편집 흐름이 끊기므로 저장 뒤에는 이 방법을 쓴다.
 function replaceInList(doc: Document) {
   const index = documents.value.findIndex(item => item.id === doc.id)
   if (index >= 0) documents.value[index] = doc
@@ -382,7 +559,7 @@ async function refreshDocuments() {
     documents.value = (await DocumentService.List()) || []
     refreshKnownTitles()
   } catch (e) {
-    error.value = (e as Error).message
+    reportError(e)
   }
 }
 
@@ -397,7 +574,7 @@ async function selectDocument(id: string) {
     titleInput.value = doc.title
     applyType(typeInfo(doc.type).id, doc.content || '')
   } catch (e) {
-    error.value = (e as Error).message
+    reportError(e)
   }
 }
 
@@ -424,24 +601,14 @@ async function save() {
     type: docType.value,
     content: currentContent(),
   }
-  saveState.value = 'saving'
-  error.value = ''
   try {
     const saved = await DocumentService.Save(payload)
     if (!saved) return
     replaceInList(saved)
     titleInput.value = saved.title
-    markSaved()
   } catch (e) {
-    saveState.value = 'idle'
-    error.value = (e as Error).message
+    reportError(e)
   }
-}
-
-function markSaved() {
-  saveState.value = 'saved'
-  if (saveStateTimer) clearTimeout(saveStateTimer)
-  saveStateTimer = setTimeout(() => { if (saveState.value === 'saved') saveState.value = 'idle' }, 2000)
 }
 
 async function createDocument(title = '', folderId = '') {
@@ -451,13 +618,13 @@ async function createDocument(title = '', folderId = '') {
     // 새 문서는 지금 열어 둔 문서와 같은 형식으로 시작한다.
     const doc = await DocumentService.Create(title, folderId, docType.value)
     if (!doc) return
-    documents.value = [doc, ...documents.value]
-    refreshKnownTitles()
+    expandFolder(folderId)
+    await refreshDocuments()
     selectedId.value = doc.id
     titleInput.value = doc.title
     applyType(typeInfo(doc.type).id, '')
   } catch (e) {
-    error.value = (e as Error).message
+    reportError(e)
   }
 }
 
@@ -473,7 +640,7 @@ async function deleteDocument(doc: Document) {
     }
     await refreshDocuments()
   } catch (e) {
-    error.value = (e as Error).message
+    reportError(e)
   }
 }
 
@@ -492,7 +659,7 @@ async function onEditorClick(mouseEvent: MouseEvent) {
     if (found) await selectDocument(found.id)
     else await createDocument(title, selectedDocument.value?.folderId || '')
   } catch (e) {
-    error.value = (e as Error).message
+    reportError(e)
   }
 }
 
@@ -525,12 +692,25 @@ const documentInfo = computed(() => {
   return {
     title: titleInput.value.trim() || current.title,
     type: typeInfo(current.type),
-    folderId: current.folderId || '',
+    folderId: folderOf(current),
     size: formatBytes(new TextEncoder().encode(content).length),
     characters: [...content].length,
     createdAt: formatDate(current.createdAt),
     updatedAt: formatDate(current.updatedAt),
   }
+})
+
+// 폴더 선택 상자에 트리 모양을 그대로 보여 주기 위해 깊이만큼 들여쓴다.
+const folderOptions = computed(() => {
+  const out: Array<{ id: string; label: string }> = []
+  const walk = (parentId: string, depth: number) => {
+    for (const folder of childFolders(parentId)) {
+      out.push({ id: folder.id, label: `${'   '.repeat(depth)}${depth ? '└ ' : ''}${folder.name}` })
+      walk(folder.id, depth + 1)
+    }
+  }
+  walk('', 0)
+  return out
 })
 
 async function openInfo() {
@@ -540,7 +720,7 @@ async function openInfo() {
   try {
     backlinks.value = (await DocumentService.Backlinks(selectedId.value)) || []
   } catch (e) {
-    error.value = (e as Error).message
+    reportError(e)
   }
 }
 
@@ -556,7 +736,8 @@ async function openBacklink(doc: Document) {
 // 모달과 형식 드롭다운은 Esc로 닫는다.
 function onKeydown(event: KeyboardEvent) {
   if (event.key !== 'Escape') return
-  if (infoOpen.value) closeInfo()
+  if (errorMessage.value) closeError()
+  else if (infoOpen.value) closeInfo()
   typeMenuOpen.value = false
 }
 
@@ -591,7 +772,7 @@ function previewText(content?: string): string {
 
 function showPreview(doc: Document, event: MouseEvent) {
   const item = event.currentTarget as HTMLElement | null
-  if (!item || draggedDocumentId.value) return
+  if (!item || dragged.value) return
   if (hoverTimer) clearTimeout(hoverTimer)
   hoverTimer = setTimeout(() => {
     const rect = item.getBoundingClientRect()
@@ -611,13 +792,12 @@ function hidePreview() {
 onMounted(async () => {
   createEditor('')
   window.addEventListener('keydown', onKeydown)
-  await Promise.all([refreshDocuments(), refreshFolders()])
+  await refreshTree()
   if (documents.value.length) await selectDocument(documents.value[0].id)
 })
 
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
-  if (saveStateTimer) clearTimeout(saveStateTimer)
   window.removeEventListener('keydown', onKeydown)
   hidePreview()
   destroyEditor()
@@ -630,7 +810,7 @@ onBeforeUnmount(() => {
       <div class="sidebar-header">
         <h1>문서</h1>
         <div class="header-buttons">
-          <button class="icon-btn" title="새 폴더" @click="createFolder">⊞</button>
+          <button class="icon-btn" title="새 폴더" @click="createFolder()">⊞</button>
           <button class="icon-btn" title="새 문서" @click="createDocument()">+</button>
         </div>
       </div>
@@ -638,93 +818,89 @@ onBeforeUnmount(() => {
 
       <div class="sidebar-body" @mouseleave="hidePreview">
         <!-- 검색 중에는 폴더 구분 없이 결과만 보여 준다. -->
-        <ul v-if="isSearching" class="document-list">
+        <ul v-if="isSearching" class="tree">
           <li
             v-for="doc in searchResults"
             :key="doc.id"
+            class="tree-row document"
             :class="{ active: doc.id === selectedId }"
             @click="selectDocument(doc.id)"
             @mouseenter="showPreview(doc, $event)"
             @mouseleave="hidePreview"
           >
-            <div class="doc-row">
+            <div class="row-main">
               <span class="doc-type" :title="typeInfo(doc.type).label">{{ typeInfo(doc.type).icon }}</span>
-              <span class="doc-title">{{ doc.title }}</span>
-              <button class="icon-btn sm danger doc-delete" title="문서 삭제" @click.stop="deleteDocument(doc)">✕</button>
+              <span class="row-name">{{ doc.title }}</span>
+              <button class="icon-btn sm danger row-action" title="문서 삭제" @click.stop="deleteDocument(doc)">✕</button>
             </div>
-            <span class="doc-date">{{ formatDate(doc.updatedAt) }}</span>
+            <span class="row-date">{{ formatDate(doc.updatedAt) }}</span>
           </li>
           <li v-if="!searchResults.length" class="empty">검색 결과가 없습니다</li>
         </ul>
 
         <template v-else>
-          <!-- 폴더별 묶음. 폴더 머리글에 문서를 끌어다 놓으면 그 폴더로 옮긴다. -->
-          <section
-            v-for="group in folderGroups"
-            :key="group.folder.id"
-            class="folder"
-            :class="{ 'drop-target': dropTarget === group.folder.id }"
-            @dragover.prevent="previewDrop(group.folder.id)"
-            @drop.prevent="dropOnFolder(group.folder.id)"
-          >
-            <div class="folder-row" @click="toggleFolder(group.folder.id)">
-              <span class="folder-caret" aria-hidden="true">{{ isCollapsed(group.folder.id) ? '▸' : '▾' }}</span>
-              <span class="folder-name">{{ group.folder.name }}</span>
-              <span class="folder-count">{{ group.documents.length }}</span>
-              <button class="icon-btn sm folder-action" title="폴더 이름 변경" @click.stop="renameFolder(group.folder)">✎</button>
-              <button class="icon-btn sm danger folder-action" title="폴더 삭제" @click.stop="deleteFolder(group.folder)">✕</button>
-            </div>
-            <ul v-if="!isCollapsed(group.folder.id)" class="document-list nested">
-              <li
-                v-for="doc in group.documents"
-                :key="doc.id"
-                :class="{ active: doc.id === selectedId, dragging: draggedDocumentId === doc.id }"
-                draggable="true"
-                @click="selectDocument(doc.id)"
-                @dragstart="startDocumentDrag(doc)"
-                @dragend="endDocumentDrag"
-                @mouseenter="showPreview(doc, $event)"
-                @mouseleave="hidePreview"
-              >
-                <div class="doc-row">
-                  <span class="doc-type" :title="typeInfo(doc.type).label">{{ typeInfo(doc.type).icon }}</span>
-                  <span class="doc-title">{{ doc.title }}</span>
-                  <button class="icon-btn sm danger doc-delete" title="문서 삭제" @click.stop="deleteDocument(doc)">✕</button>
+          <ul class="tree">
+            <li
+              v-for="row in treeRows"
+              :key="row.key"
+              class="tree-row"
+              :class="[
+                row.kind,
+                dropHint && dropHint.key === row.key ? `drop-${dropHint.position}` : '',
+                row.kind === 'document' && row.document!.id === selectedId ? 'active' : '',
+                dragged && ((row.kind === 'document' && dragged.id === row.document!.id) || (row.kind === 'folder' && dragged.id === row.folder!.id)) ? 'dragging' : '',
+              ]"
+              :style="{ paddingLeft: `${10 + row.depth * 14}px` }"
+              :draggable="row.kind !== 'empty'"
+              @dragstart="startDrag(row, $event)"
+              @dragend="endDrag"
+              @dragover.prevent="onRowDragOver(row, $event)"
+              @drop.prevent="onRowDrop(row)"
+            >
+              <!-- 폴더 줄 -->
+              <template v-if="row.kind === 'folder'">
+                <div class="row-main" @click="toggleFolder(row.folder!.id)">
+                  <span class="folder-caret" aria-hidden="true">{{ isCollapsed(row.folder!.id) ? '▸' : '▾' }}</span>
+                  <span
+                    class="row-name folder-name"
+                    title="두 번 눌러 이름 변경"
+                    @dblclick.stop="renameFolder(row.folder!)"
+                  >{{ row.folder!.name }}</span>
+                  <span class="folder-count">{{ folderCount(row.folder!.id) }}</span>
+                  <button class="icon-btn sm row-action" title="이 폴더에 새 문서" @click.stop="createDocument('', row.folder!.id)">+</button>
+                  <button class="icon-btn sm row-action" title="하위 폴더 추가" @click.stop="createFolder(row.folder!.id)">⊞</button>
+                  <button class="icon-btn sm danger row-action" title="폴더 삭제" @click.stop="deleteFolder(row.folder!)">✕</button>
                 </div>
-                <span class="doc-date">{{ formatDate(doc.updatedAt) }}</span>
-              </li>
-              <li v-if="!group.documents.length" class="empty sm">문서를 끌어다 놓으세요</li>
-            </ul>
-          </section>
+              </template>
 
-          <!-- 폴더 밖 문서. 이 영역에 놓으면 폴더에서 빠져나온다. -->
+              <!-- 문서 줄 -->
+              <template v-else-if="row.kind === 'document'">
+                <div
+                  class="row-main"
+                  @click="selectDocument(row.document!.id)"
+                  @mouseenter="showPreview(row.document!, $event)"
+                  @mouseleave="hidePreview"
+                >
+                  <span class="doc-type" :title="typeInfo(row.document!.type).label">{{ typeInfo(row.document!.type).icon }}</span>
+                  <span class="row-name">{{ row.document!.title }}</span>
+                  <button class="icon-btn sm danger row-action" title="문서 삭제" @click.stop="deleteDocument(row.document!)">✕</button>
+                </div>
+                <span class="row-date">{{ formatDate(row.document!.updatedAt) }}</span>
+              </template>
+
+              <!-- 빈 폴더 안내 -->
+              <span v-else class="empty sm">비어 있음</span>
+            </li>
+          </ul>
+
+          <!-- 남는 공간은 최상위로 빼는 자리로 쓴다. -->
           <div
             class="root-drop"
-            :class="{ 'drop-target': dropTarget === '' }"
-            @dragover.prevent="previewDrop('')"
-            @drop.prevent="dropOnFolder('')"
+            :class="{ 'drop-target': dropHint && dropHint.key === 'root' }"
+            @dragover.prevent="onRootDragOver"
+            @drop.prevent="onRootDrop"
           >
-            <ul class="document-list">
-              <li
-                v-for="doc in rootDocuments"
-                :key="doc.id"
-                :class="{ active: doc.id === selectedId, dragging: draggedDocumentId === doc.id }"
-                draggable="true"
-                @click="selectDocument(doc.id)"
-                @dragstart="startDocumentDrag(doc)"
-                @dragend="endDocumentDrag"
-                @mouseenter="showPreview(doc, $event)"
-                @mouseleave="hidePreview"
-              >
-                <div class="doc-row">
-                  <span class="doc-type" :title="typeInfo(doc.type).label">{{ typeInfo(doc.type).icon }}</span>
-                  <span class="doc-title">{{ doc.title }}</span>
-                  <button class="icon-btn sm danger doc-delete" title="문서 삭제" @click.stop="deleteDocument(doc)">✕</button>
-                </div>
-                <span class="doc-date">{{ formatDate(doc.updatedAt) }}</span>
-              </li>
-              <li v-if="!documents.length" class="empty">문서가 없습니다</li>
-            </ul>
+            <span v-if="!treeRows.length" class="empty">문서가 없습니다</span>
           </div>
         </template>
       </div>
@@ -793,17 +969,15 @@ onBeforeUnmount(() => {
         <button
           v-if="docType === 'text'"
           type="button"
-          class="wrap-toggle"
+          class="header-icon-button"
           :class="{ active: wrapText }"
           :aria-pressed="wrapText"
-          title="자동 줄바꿈"
+          :title="`자동 줄바꿈 ${wrapText ? '끄기' : '켜기'}`"
+          aria-label="자동 줄바꿈"
           @click="toggleWrap"
-        >자동 줄바꿈</button>
-        <span class="save-state" role="status">
-          {{ saveState === 'saving' ? '저장 중…' : saveState === 'saved' ? '저장됨' : '' }}
-        </span>
+        >↵</button>
         <button
-          class="info-button"
+          class="header-icon-button"
           type="button"
           :disabled="!selectedId"
           title="문서 정보"
@@ -811,8 +985,6 @@ onBeforeUnmount(() => {
           @click="openInfo"
         >ⓘ</button>
       </header>
-
-      <div v-if="error" class="alert error">{{ error }}</div>
 
       <div v-show="!selectedId" class="state">
         <p>왼쪽에서 문서를 고르거나 새 문서를 만드세요.</p>
@@ -852,10 +1024,10 @@ onBeforeUnmount(() => {
               <select
                 class="folder-select"
                 :value="documentInfo.folderId"
-                @change="moveDocument(selectedId, ($event.target as HTMLSelectElement).value)"
+                @change="moveDocument(selectedId, ($event.target as HTMLSelectElement).value, 0)"
               >
                 <option value="">폴더 없음</option>
-                <option v-for="folder in folders" :key="folder.id" :value="folder.id">{{ folder.name }}</option>
+                <option v-for="option in folderOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
               </select>
             </dd>
             <dt>용량</dt>
@@ -874,6 +1046,23 @@ onBeforeUnmount(() => {
             </ul>
             <p v-else class="hint">아직 이 문서를 링크한 문서가 없습니다.</p>
           </section>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 자동 저장은 조용히 흘러가므로 실패는 모달로 분명히 알린다. -->
+    <Teleport to="body">
+      <div v-if="errorMessage" class="modal-overlay" @click.self="closeError">
+        <div class="modal error" role="alertdialog" aria-modal="true" aria-label="오류">
+          <header class="modal-header">
+            <h2>문제가 생겼습니다</h2>
+            <button class="icon-btn" type="button" title="닫기" @click="closeError">✕</button>
+          </header>
+          <p class="error-text">{{ errorMessage }}</p>
+          <p class="hint">계속 실패하면 편집한 내용을 다른 곳에 복사해 두세요.</p>
+          <div class="modal-actions">
+            <button class="modal-button" type="button" @click="closeError">닫기</button>
+          </div>
         </div>
       </div>
     </Teleport>
@@ -916,45 +1105,52 @@ onBeforeUnmount(() => {
   font: inherit;
   font-size: 12px;
 }
-.sidebar-body { flex: 1; min-height: 0; overflow: auto; }
+.sidebar-body { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; }
 
-/* 폴더 묶음 */
-.folder { border-bottom: 1px solid var(--border); }
-.folder.drop-target, .root-drop.drop-target { background: rgba(79, 124, 255, 0.12); }
-.folder-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
+/* 트리는 폴더와 문서를 한 목록에 펼쳐 그리고 깊이는 들여쓰기로만 나타낸다.
+   놓을 자리 표시는 가상 요소로 그려 줄 높이가 흔들리지 않게 한다. */
+.tree { list-style: none; margin: 0; padding: 0; }
+.tree-row {
+  position: relative;
+  padding: 7px 12px 7px 10px;
   cursor: pointer;
-  color: var(--muted);
-  font-size: 12px;
+}
+.tree-row:hover { background: var(--panel-2); }
+.tree-row.active { background: var(--panel-2); box-shadow: inset 3px 0 0 var(--accent); }
+.tree-row.dragging { opacity: 0.45; }
+.tree-row.drop-before::after,
+.tree-row.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+}
+.tree-row.drop-before::after { top: 0; }
+.tree-row.drop-after::after { bottom: 0; }
+.tree-row.drop-inside { background: rgba(79, 124, 255, 0.16); box-shadow: inset 0 0 0 1px var(--accent); }
+
+.row-main { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 600;
+  font-size: 13px;
 }
-.folder-row:hover { background: var(--panel-2); color: var(--text); }
-.folder-caret { flex: 0 0 auto; width: 10px; font-size: 10px; }
-.folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.folder-count { flex: 0 0 auto; font-size: 11px; opacity: 0.7; }
-.folder-action { display: none; flex: 0 0 auto; }
-.folder-row:hover .folder-action { display: inline-flex; }
-.root-drop { min-height: 60px; }
+.row-date { display: block; margin-top: 2px; margin-left: 21px; color: var(--muted); font-size: 11px; }
+.row-action { display: none; flex: 0 0 auto; }
+.tree-row:hover .row-action { display: inline-flex; }
 
-.document-list { list-style: none; margin: 0; padding: 0; }
-.document-list.nested li { padding-left: 28px; }
-.document-list.nested li.active { padding-left: 25px; }
-.document-list li {
-  padding: 8px 16px;
-  border-bottom: 1px solid transparent;
-  cursor: pointer;
-}
-.document-list li:hover { background: var(--panel-2); }
-.document-list li.active {
-  background: var(--panel-2);
-  border-left: 3px solid var(--accent);
-  padding-left: 13px;
-}
-.document-list li.dragging { opacity: 0.45; }
-.doc-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tree-row.folder .row-name { color: var(--muted); font-size: 12px; }
+.tree-row.folder:hover .row-name { color: var(--text); }
+.folder-caret { flex: 0 0 auto; width: 10px; color: var(--muted); font-size: 10px; }
+.folder-count { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+.tree-row.empty { cursor: default; padding-top: 4px; padding-bottom: 6px; }
+
 /* 목록의 형식 아이콘은 눈으로 구분만 하는 용도라 누를 수 없다. */
 .doc-type {
   flex: 0 0 auto;
@@ -964,21 +1160,11 @@ onBeforeUnmount(() => {
   font-size: 11px;
   font-weight: 700;
 }
-.doc-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  font-size: 13px;
-}
-.doc-delete { display: none; flex: 0 0 auto; }
-.document-list li:hover .doc-delete { display: inline-flex; }
-.doc-date { display: block; margin-top: 2px; margin-left: 21px; color: var(--muted); font-size: 11px; }
-.empty { color: var(--muted); font-style: italic; cursor: default; padding: 8px 16px; }
-.empty.sm { font-size: 11px; padding-left: 28px; }
-.empty:hover { background: transparent; }
+
+.root-drop { flex: 1; min-height: 48px; }
+.root-drop.drop-target { background: rgba(79, 124, 255, 0.12); }
+.empty { color: var(--muted); font-style: italic; font-size: 12px; padding: 8px 16px; }
+.empty.sm { padding: 0; font-size: 11px; }
 
 /* 목록 호버 팝오버. body로 옮겨 그리므로 위치는 인라인 스타일이 정한다. */
 .doc-preview {
@@ -1008,7 +1194,7 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.preview-body.empty { font-style: italic; padding: 0; }
+.preview-body.empty { font-style: italic; padding: 0; margin-top: 8px; }
 
 .icon-btn {
   background: transparent;
@@ -1114,22 +1300,8 @@ onBeforeUnmount(() => {
 }
 .title-input:disabled { opacity: 0.5; }
 
-.wrap-toggle {
-  flex-shrink: 0;
-  padding: 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.wrap-toggle:hover { color: var(--text); background: var(--panel-2); }
-.wrap-toggle.active { border-color: var(--accent); color: var(--accent); }
-
-.save-state { flex-shrink: 0; color: var(--muted); font-size: 11px; min-width: 44px; text-align: right; }
-
-.info-button {
+/* 머리글 오른쪽 아이콘 버튼(자동 줄바꿈, 문서 정보) */
+.header-icon-button {
   flex: 0 0 auto;
   width: 30px;
   height: 30px;
@@ -1140,14 +1312,12 @@ onBeforeUnmount(() => {
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
-  font-size: 17px;
+  font-size: 16px;
   line-height: 1;
 }
-.info-button:hover:not(:disabled) { color: var(--accent); border-color: var(--border); background: var(--panel-2); }
-.info-button:disabled { opacity: 0.4; cursor: default; }
-
-.alert { margin: 8px 16px; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
-.alert.error { background: rgba(255, 90, 106, 0.12); color: var(--danger); overflow-wrap: anywhere; }
+.header-icon-button:hover:not(:disabled) { color: var(--accent); border-color: var(--border); background: var(--panel-2); }
+.header-icon-button:disabled { opacity: 0.4; cursor: default; }
+.header-icon-button.active { color: var(--accent); border-color: var(--accent); }
 
 .state { padding: 60px 24px; text-align: center; color: var(--muted); }
 .hint { color: var(--muted); font-size: 12px; }
@@ -1181,7 +1351,7 @@ onBeforeUnmount(() => {
 }
 .plain-editor.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 
-/* 문서 정보 모달 */
+/* 모달(문서 정보·오류) */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -1203,6 +1373,7 @@ onBeforeUnmount(() => {
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
   color: var(--text);
 }
+.modal.error { border-color: var(--danger); }
 .modal-header {
   display: flex;
   align-items: center;
@@ -1210,6 +1381,26 @@ onBeforeUnmount(() => {
   margin-bottom: 14px;
 }
 .modal-header h2 { margin: 0; font-size: 15px; }
+.error-text {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(255, 90, 106, 0.12);
+  color: var(--danger);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.modal-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+.modal-button {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+}
+.modal-button:hover { border-color: var(--accent); color: var(--accent); }
+
 .info-grid {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
