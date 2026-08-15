@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { applyTheme, isDarkMode } from './theme'
 import { MODULE_PANES, togglePane, usePaneVisible } from './panes'
+import { flushActions } from './toasts'
+import ActionToasts from './components/common/ActionToasts.vue'
 import {
   canDisableModule,
   enabledModules,
@@ -54,6 +56,13 @@ function cancelModuleDrag() {
   draggedModule.value = null
   dropTargetModule.value = null
 }
+
+// 되돌릴 수 있게 미뤄 둔 작업(메일 삭제·전송)은 앱을 닫기 전에 마저 실행한다.
+function flushBeforeUnload() {
+  flushActions()
+}
+onMounted(() => window.addEventListener('beforeunload', flushBeforeUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', flushBeforeUnload))
 </script>
 
 <template>
@@ -137,6 +146,8 @@ function cancelModuleDrag() {
         />
       </template>
     </main>
+    <!-- 되돌릴 수 있는 작업 알림은 어느 모듈에서든 보이도록 앱 껍데기에 둔다. -->
+    <ActionToasts />
   </div>
 </template>
 

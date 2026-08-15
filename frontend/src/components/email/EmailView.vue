@@ -6,6 +6,7 @@ import type { Message, MessageRef } from '../../../bindings/working/internal/mod
 import ComposeForm from './ComposeForm.vue'
 import { isDarkMode } from '../../theme'
 import { canSendMail } from '../../accounts'
+import { scheduleAction } from '../../toasts'
 import { copyText } from '../../clipboard'
 import ResizeHandle from '../common/ResizeHandle.vue'
 import { usePaneVisible, usePaneWidth } from '../../panes'
@@ -32,7 +33,9 @@ const selectedMessage = ref<Message | null>(null)
 
 const loadingList = ref(false)
 const loadingMore = ref(false)
-const deletingMessage = ref(false)
+// 지우기로 했지만 되돌리기 시간이 아직 남은 메일. 목록을 다시 받아도
+// 화면에 되살아나지 않도록 걸러 낸다.
+const pendingDeleteKeys = new Set<string>()
 // 일괄 처리를 위해 선택한 메일. messageKey 값을 담는다.
 const selectedKeys = ref<Set<string>>(new Set())
 const bulkRunning = ref(false)
@@ -177,7 +180,7 @@ async function refreshMessages() {
   try {
     const page = await EmailService.ListRefreshPage(accountId, folder, '')
     if (requestId === messageLoadRequest && accountId === selectedAccountId.value && folder === selectedFolder.value) {
-      messages.value = page?.messages || []
+      setMessages(page?.messages || [])
       nextPageToken.value = page?.nextPageToken || ''
       clearSelection()
     }
@@ -192,7 +195,7 @@ async function loadMessages() {
   if (!selectedAccountId.value) return
 
   if (selectedFolder.value === LOCAL_DRAFT_FOLDER) {
-    messages.value = readLocalDrafts()
+    setMessages(readLocalDrafts())
     nextPageToken.value = ''
     loadingList.value = false
     clearSelection()
@@ -214,7 +217,7 @@ async function loadMessages() {
       accountId === selectedAccountId.value &&
       folder === selectedFolder.value
     ) {
-      messages.value = page?.messages || []
+      setMessages(page?.messages || [])
       nextPageToken.value = page?.nextPageToken || ''
       clearSelection()
       // 첫 화면의 캐시가 비어 있을 때만 앱 시작 자동 새로고침을 수행한다.
@@ -247,7 +250,7 @@ async function loadMoreMessages() {
   try {
     const page = await EmailService.ListMore(accountId, folder, nextPageToken.value)
     if (requestId === messageLoadRequest && accountId === selectedAccountId.value && folder === selectedFolder.value) {
-      messages.value = page?.messages || messages.value
+      setMessages(page?.messages || messages.value)
       nextPageToken.value = page?.nextPageToken || ''
     }
   } catch (e) {
@@ -270,6 +273,13 @@ function selectMessage(m: Message) {
 // 캐시된 메시지를 식별하는 키. Gmail은 원격 ID를, IMAP은 UID를 사용한다.
 function messageKey(m: Message): string {
   return m.id || `uid:${m.uid}`
+}
+
+// setMessages는 목록을 갈아 끼우면서 지우는 중인 메일을 걸러 낸다.
+function setMessages(list: Message[]) {
+  messages.value = pendingDeleteKeys.size
+    ? list.filter(item => !pendingDeleteKeys.has(messageKey(item)))
+    : list
 }
 
 // 메시지를 백엔드 일괄 API에 넘길 식별자로 바꾼다.
@@ -295,29 +305,66 @@ function toggleRead(m: Message) {
   void markRead([m], m.unread === true)
 }
 
-// 메일을 서버에서 삭제한다. Gmail은 휴지통으로, IMAP은 폴더에서 제거된다.
-async function deleteMessages(targets: Message[]) {
-  if (!targets.length || deletingMessage.value) return
-  const label = targets.length === 1
-    ? `메일 "${targets[0].subject || '(제목 없음)'}"`
-    : `선택한 메일 ${targets.length}개`
-  if (!confirm(`${label} 을(를) 삭제할까요?`)) return
+// 되돌릴 수 있는 시간(초). 이 시간이 지나야 메일 서버에서 실제로 지운다.
+const UNDO_DELETE_SECONDS = 60
 
-  deletingMessage.value = true
-  try {
-    if (isLocalDrafts.value) {
-      targets.forEach(deleteLocalDraft)
-    } else {
-      if (!selectedAccountId.value) return
-      await EmailService.MessagesDelete(selectedAccountId.value, selectedFolder.value, targets.map(messageRef))
-    }
-    dropFromList(targets)
-    setInfo(`메일 ${targets.length}개를 삭제했습니다.`)
-  } catch (e) {
-    setError((e as Error).message)
-  } finally {
-    deletingMessage.value = false
+/**
+ * 메일을 지운다. 지울 때마다 묻는 대신 목록에서 먼저 감추고, 오른쪽 아래
+ * 알림에서 1분 동안 되돌릴 수 있게 한다. 실제 삭제는 그 시간이 지난 뒤에
+ * 한 번만 보낸다. 되돌리기가 서버에 복구를 요청하는 방식이 아니라 아직
+ * 지우지 않은 것이라, IMAP처럼 되살릴 수 없는 계정에서도 안전하다.
+ */
+function deleteMessages(targets: Message[]) {
+  if (!targets.length) return
+  const local = isLocalDrafts.value
+  const accountId = selectedAccountId.value
+  const folder = selectedFolder.value
+  if (!local && !accountId) return
+
+  // 되돌릴 때 원래 자리로 되돌려 놓기 위해 위치까지 기억해 둔다.
+  const removed = targets
+    .map(message => ({ message, index: messages.value.findIndex(item => messageKey(item) === messageKey(message)) }))
+    .filter(item => item.index >= 0)
+  const keys = targets.map(messageKey)
+  keys.forEach(key => pendingDeleteKeys.add(key))
+  dropFromList(targets)
+
+  const label = targets.length === 1
+    ? `메일 "${targets[0].subject || '(제목 없음)'}"을(를) 삭제했습니다.`
+    : `메일 ${targets.length}개를 삭제했습니다.`
+
+  scheduleAction({
+    message: label,
+    actionLabel: '되돌리기',
+    seconds: UNDO_DELETE_SECONDS,
+    commit: async () => {
+      try {
+        if (local) targets.forEach(deleteLocalDraft)
+        else await EmailService.MessagesDelete(accountId, folder, targets.map(messageRef))
+      } catch (e) {
+        // 실제 삭제가 실패했으면 목록에도 다시 보여 준다.
+        restoreMessages(removed, accountId, folder)
+        setError(`메일 삭제 실패: ${(e as Error).message}`)
+      } finally {
+        keys.forEach(key => pendingDeleteKeys.delete(key))
+      }
+    },
+    cancel: () => {
+      keys.forEach(key => pendingDeleteKeys.delete(key))
+      restoreMessages(removed, accountId, folder)
+    },
+  })
+}
+
+// 감췄던 메일을 원래 자리로 되돌린다. 그 사이 다른 폴더로 옮겨 갔다면
+// 지금 목록에 끼워 넣지 않는다. 서버에 그대로 있으니 새로고침하면 다시 보인다.
+function restoreMessages(removed: Array<{ message: Message; index: number }>, accountId: string, folder: string) {
+  if (selectedAccountId.value !== accountId || selectedFolder.value !== folder) return
+  const restored = [...messages.value]
+  for (const item of [...removed].sort((a, b) => a.index - b.index)) {
+    restored.splice(Math.min(item.index, restored.length), 0, item.message)
   }
+  messages.value = restored
 }
 
 // 선택한 메일을 다른 폴더로 옮긴다. 옮긴 메일은 현재 목록에서 사라진다.
@@ -440,14 +487,14 @@ function saveLocalDraft(message: Message) {
   writeLocalDrafts(drafts)
   composeDraft.value = draft
   selectedMessage.value = draft
-  if (selectedFolder.value === LOCAL_DRAFT_FOLDER) messages.value = drafts
+  if (selectedFolder.value === LOCAL_DRAFT_FOLDER) setMessages(drafts)
 }
 
 function deleteLocalDraft(message?: Message | null) {
   if (!message?.uid) return
   const drafts = readLocalDrafts().filter(item => item.uid !== message.uid)
   writeLocalDrafts(drafts)
-  if (selectedFolder.value === LOCAL_DRAFT_FOLDER) messages.value = drafts
+  if (selectedFolder.value === LOCAL_DRAFT_FOLDER) setMessages(drafts)
 }
 
 async function copyRaw() {
@@ -679,7 +726,7 @@ onMounted(() => {
             <option v-for="folder in moveTargets" :key="folder" :value="folder">{{ folder }}</option>
           </select>
         </template>
-        <button class="btn sm danger-btn" :disabled="deletingMessage" @click="deleteMessages(selectedMessages)">삭제</button>
+        <button class="btn sm danger-btn" @click="deleteMessages(selectedMessages)">삭제</button>
         <button class="btn sm bulk-clear" @click="clearSelection">선택 해제</button>
       </div>
 
@@ -709,7 +756,6 @@ onMounted(() => {
               <button
                 class="icon-btn sm danger msg-delete"
                 title="메일 삭제"
-                :disabled="deletingMessage"
                 @click.stop="deleteMessages([m])"
               >✕</button>
             </div>
@@ -770,9 +816,8 @@ onMounted(() => {
           >{{ selectedMessage.unread ? '읽음으로 표시' : '안 읽음으로 표시' }}</button>
           <button
             class="btn danger-btn"
-            :disabled="deletingMessage"
             @click="deleteMessages([selectedMessage])"
-          >{{ deletingMessage ? '삭제 중…' : '삭제' }}</button>
+          >삭제</button>
         </div>
         <section v-if="selectedMessage.attachments?.length" class="attachments" aria-label="첨부파일">
           <h3>첨부파일 ({{ selectedMessage.attachments.length }})</h3>
