@@ -1,15 +1,23 @@
 import { Events } from '@wailsio/runtime'
 
 /**
- * 창을 다녀왔을 때 글 쓰던 자리를 되찾아 주는 보정.
+ * 창을 다녀왔을 때 한국어 입력이 어긋나는 문제를 보정한다.
  *
- * WebView2는 다른 창에 갔다가 돌아오면 웹뷰 안의 포커스를 되살리지 않고
- * document.body로 되돌려 놓는다. 그래서 쓰던 입력란에서 커서가 빠지고, 다시
- * 글을 이어 쓸 때 Chromium이 입력기에 캐럿 위치를 알려 주지 못해 한국어 후보
- * 창이 캐럿이 아니라 모니터 왼쪽 위에 뜬다.
+ * WebView2에서는 글을 쓰다가 다른 창에 갔다 오면 두 가지가 어긋난다.
  *
- * 창이 다시 활성화될 때 직전에 글을 쓰던 요소로 포커스를 되돌려 준다. 그러면
- * 커서도 제자리로 오고, Chromium이 캐럿 위치를 다시 계산해 입력기에 알린다.
+ * 하나는 조합이다. 한글을 조합하는 도중에 창을 벗어나면 조합이 끝나지 않은 채
+ * 남는다. compositionend가 오지 않는 경우도 있어, 웹 쪽에서는 아직 조합 중인
+ * 것처럼 보인다.
+ *
+ * 다른 하나는 포커스다. 웹뷰는 창이 다시 활성화되어도 안쪽 포커스를 되살리지
+ * 않고 document.body로 되돌려 놓는다. 글 쓰던 자리가 사라지는데, 이것이 입력기
+ * 문제의 뿌리다. Chromium은 글을 쓸 수 있는 요소에 포커스가 있을 때만 입력기
+ * 문맥을 창에 붙여 두기 때문이다. 실제로 웹뷰의 입력 창을 확인해 보면 포커스가
+ * 빠진 상태에서는 입력기 문맥이 아예 없다. 문맥이 없으니 조합 중인 글자를
+ * 그릴 자리도 정해지지 않아 화면 왼쪽 위의 기본 입력기 창에 그려진다.
+ *
+ * 그래서 창으로 돌아올 때 쓰던 자리로 포커스를 되돌린다. 그러면 Chromium이
+ * 입력기 문맥을 다시 붙이고 조합 창 위치도 새로 잡는다.
  */
 
 interface FocusSnapshot {
@@ -20,7 +28,8 @@ interface FocusSnapshot {
 }
 
 let snapshot: FocusSnapshot | null = null
-// 조합 중에 포커스를 건드리면 쓰던 글자가 끊기므로 그때는 손대지 않는다.
+// 조합 중인지 여부. 창을 벗어날 때는 조합이 끝난 것으로 보고 반드시 되돌린다.
+// 이 값이 참인 채로 남으면 아래 보정이 통째로 멈추므로 한곳에서만 관리한다.
 let composing = false
 
 function isEditable(node: EventTarget | null): node is HTMLElement {
@@ -44,6 +53,22 @@ function capture(element: HTMLElement) {
     return
   }
   snapshot = { element, start: null, end: null, direction: null }
+}
+
+/**
+ * deactivate는 창을 벗어나기 직전에 글 쓰던 자리를 기억하고 포커스를 뗀다.
+ * 포커스를 떼면 조합 중이던 글자가 확정된다.
+ *
+ * 다만 창을 벗어난 사실을 웹 쪽이 알았을 때는 이미 웹뷰가 포커스를 놓아 버린
+ * 뒤일 때가 많다. 그때는 여기서 할 일이 없고, 아래 restore가 제자리를 되찾는다.
+ */
+function deactivate() {
+  const active = document.activeElement
+  if (!isEditable(active)) return
+  capture(active)
+  active.blur()
+  // 조합 중에 창을 벗어나면 compositionend가 오지 않을 수 있어 여기서 정리한다.
+  composing = false
 }
 
 function restore() {
@@ -80,19 +105,24 @@ export function setupIMEFix() {
   document.addEventListener('compositionstart', () => { composing = true }, true)
   document.addEventListener('compositionend', () => { composing = false }, true)
 
-  // 글을 쓰던 요소와 커서 자리를 계속 기억해 둔다. 창을 벗어날 때는 이미
-  // 포커스가 빠진 뒤라 activeElement로는 알 수 없으므로 여기서 남긴다.
+  // 글을 쓰던 요소와 커서 자리를 계속 기억해 둔다.
   document.addEventListener('focusin', event => {
     if (isEditable(event.target)) capture(event.target)
   }, true)
   document.addEventListener('focusout', event => {
     if (isEditable(event.target)) capture(event.target)
+    // 포커스가 빠지면 그 요소에서 조합이 이어질 수 없다.
+    composing = false
   }, true)
 
-  window.addEventListener('focus', restoreSoon)
+  // 창을 벗어날 때. 웹뷰의 blur가 먼저 오고 Wails 알림이 뒤따르는데, 어느
+  // 쪽이 먼저 와도 한 번만 처리되도록 deactivate가 스스로 확인한다.
+  window.addEventListener('blur', deactivate)
+  Events.On('windows:WindowInactive', deactivate)
 
-  // 웹뷰의 focus 이벤트만으로는 창이 다시 활성화된 순간을 놓칠 때가 있어,
+  // 창으로 돌아올 때. 웹뷰의 focus 이벤트만으로는 순간을 놓칠 때가 있어
   // Wails가 창에서 직접 받아 넘겨 주는 활성화 알림도 함께 듣는다.
+  window.addEventListener('focus', restoreSoon)
   Events.On('windows:WindowActive', restoreSoon)
   Events.On('windows:WindowClickActive', restoreSoon)
   Events.On('windows:WindowSetFocus', restoreSoon)
