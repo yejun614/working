@@ -1,9 +1,10 @@
 # WebView2 한국어 입력기 문제 해결 기록
 
 다른 창을 다녀오면 한국어 입력이 망가지던 문제를 고친 과정이다.
-네 번 헛짚은 뒤 다섯 번째에 해결했고, 그 네 번을 어떻게 배제했는지까지 남긴다.
+다섯 번 헛짚은 끝에 해결했고, 그 다섯 번을 어떻게 배제했는지까지 남긴다.
 
-관련 커밋: `a3b6d98` → `a687e4d` → `0fe256a` → `2ee8364`(되돌림) → **`50642fa`(해결)**
+관련 커밋: `a3b6d98` → `a687e4d` → `0fe256a` → `2ee8364`(되돌림) → `50642fa`(해결)
+→ **`b9eb5bc`(간헐 재발 마무리)**
 
 ---
 
@@ -63,35 +64,34 @@ case w32.WM_SETFOCUS:
 
 ## 수정
 
-`internal/platform/ime_windows.go`
+`internal/platform/ime_windows.go` — 창 프로시저를 가로채 세 시점에서 포커스를
+웹뷰로 넘긴다.
 
 ```go
-// 창이 포커스를 받는 순간, 웹뷰가 실제 키보드 포커스를 가져가게 한다.
-window.OnWindowEvent(events.Windows.WindowSetFocus, func(*application.WindowEvent) {
-    focusWebview(window)
-})
+func onWindowMessage(hwnd, msg, wparam, lparam, id, refData uintptr) uintptr {
+    // 원래 처리를 먼저 돌린다. Wails가 최상위 창으로 포커스를 가져가는 일까지
+    // 끝난 뒤에 우리가 마지막으로 확정해야 덮어써지지 않는다.
+    result, _, _ := procDefSubclassProc.Call(hwnd, msg, wparam, lparam)
 
-// SetFocus는 그 창을 만든 스레드에서만 통하므로 메인 스레드로 넘긴다.
-func focusWebview(window *application.WebviewWindow) {
-    handle := window.NativeWindow()
-    if handle == nil {
-        return
+    switch msg {
+    case wmSetFocus, wmExitSizeMove:
+        focusChild(hwnd)
+    case wmNCDestroy:
+        _, _, _ = procRemoveWindowSubclass.Call(hwnd, focusSubclass, subclassID)
     }
-    application.InvokeAsync(func() {
-        child, _, _ := procGetWindow.Call(uintptr(handle), gwChild) // GW_CHILD
-        if child == 0 {
-            return
-        }
-        _, _, _ = procSetFocus.Call(child)
-    })
+    return result
 }
 ```
 
-핵심은 두 가지다.
+핵심은 네 가지다.
 
-1. **Win32 `SetFocus`를 자식 창에 직접 부른다.** `MoveFocus`로는 부족하다.
-2. **메인 스레드에서 부른다.** `SetFocus`는 창을 소유한 스레드에서만 동작한다.
-   Wails 이벤트 콜백은 다른 고루틴에서 실행되므로 `InvokeAsync`로 넘겨야 한다.
+1. **Win32 `SetFocus`를 웹뷰 자식 창에 직접 부른다.** `MoveFocus`로는 부족하다.
+2. **창 프로시저 안에서 곧바로 한다.** Wails 이벤트로 받아 처리하면 늦다(아래 참고).
+3. **원래 처리를 먼저 돌린 뒤에 확정한다.** Wails가 최상위 창으로 가져가는 포커스를
+   덮어써야 하기 때문이다.
+4. **`WM_EXITSIZEMOVE`도 함께 처리한다.** Wails가 `WM_ENTERSIZEMOVE`에서
+   `SetFocus(최상위)`를 부르고 되돌리지 않으므로, 창을 옮기거나 크기를 조절하면
+   포커스가 최상위 창에 남는다.
 
 ### 결과
 
@@ -99,6 +99,8 @@ func focusWebview(window *application.WebviewWindow) {
 | --- | --- |
 | 수정 전 | `BODY` |
 | 수정 후 | `INPUT` |
+
+빠른 창 전환 12회에서 12회 모두 웹뷰 창으로 확정됐다.
 
 ---
 
@@ -182,6 +184,30 @@ if (!snap || composing) return   // ← composing이 true로 굳어 버림
 `ImmGetContext`가 항상 0이었다. Chromium은 구형 IMM32가 아니라 **TSF**를 쓰므로
 IMM32 호출은 애초에 닿지 않는다. 동작하지 않는 코드라 전부 제거했다.
 
+### 시도 5 — 이벤트로 포커스 넘기기 · 대부분 해결, 간헐 재발
+
+Wails의 `WindowSetFocus` 이벤트를 받아 `InvokeAsync`로 `SetFocus`를 불렀다.
+평소에는 잘 되지만 **빠르게 창을 오가면 가끔 어긋났다.**
+
+실행 지연을 재 보니 원인이 분명했다.
+
+```
+[FOCUS] delay=525µs
+[FOCUS] delay=6.7249ms
+[FOCUS] delay=40.1816ms
+[FOCUS] delay=52.103ms
+```
+
+이벤트는 채널과 메인 스레드 큐를 거쳐 오므로 **0.5~52ms 늦게** 실행된다.
+그 사이에 포커스가 또 바뀌면 이미 지난 상황을 두고 손대게 된다.
+wry가 창 프로시저 안에서 동기적으로 처리하는 이유가 여기에 있었다.
+
+같은 조사에서 자식 창 선택도 문제였다. `GetWindow(hwnd, GW_CHILD)`는 **Z 순서**
+기준이라 다른 자식 창이 잠깐 위로 올라오면 엉뚱한 창을 잡는다. 클래스 이름으로
+`Chrome_WidgetWin`을 확인해 고르도록 바꿨다.
+
+→ 창 프로시저 서브클래스로 옮겨 해결(`b9eb5bc`). 전환 12회 중 12회 성공.
+
 ### 그 밖에 배제한 것
 
 **Wails 업그레이드** — `alpha2.117`에서 `beta.8`까지 나와 있어 해당 소스를 받아
@@ -224,3 +250,8 @@ Wails에 한국어 IME 관련 이슈는 아직 없다. 이 기록을 근거로 �
 
 **나빠지면 즉시 되돌린다.** 시도 3은 원래 증상보다 나빴다. 원인을 더 파기 전에
 되돌리는 것이 먼저다.
+
+**"대부분 고쳐졌다"는 아직 안 고쳐진 것이다.** 시도 5는 90%쯤 동작해서 해결로
+보였지만, 남은 간헐성의 원인은 타이밍이었다. 참고한 구현이 왜 하필 그 자리에서
+그 일을 하는지까지 봤어야 했다. wry가 창 프로시저 안에서 동기적으로 처리하는 것은
+취향이 아니라 필요였다.
