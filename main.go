@@ -92,8 +92,8 @@ func main() {
 		URL:              "/",
 	})
 
-	// 한국어 입력기 후보 창이 모니터 왼쪽 위에 뜨는 WebView2 문제를 보정한다.
-	platform.FixIMEPosition(window)
+	// 창을 다녀왔을 때 웹뷰가 키보드 포커스를 되찾도록 보정한다(한국어 입력기 문제).
+	platform.FixWebviewFocus(window)
 
 	err = app.Run()
 	if err != nil {
