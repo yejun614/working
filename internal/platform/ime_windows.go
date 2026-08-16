@@ -5,6 +5,7 @@ package platform
 
 import (
 	"syscall"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -12,6 +13,10 @@ import (
 
 // wmMove는 창이 움직였다고 알리는 Windows 메시지이다.
 const wmMove = 0x0003
+
+// settleDelay는 창이 활성화된 뒤 웹뷰로 포커스가 넘어갈 때까지 기다리는 시간이다.
+// 활성화 시점에 한 번, 포커스가 자리를 잡은 뒤에 한 번 더 알려 준다.
+const settleDelay = 150 * time.Millisecond
 
 var (
 	user32          = syscall.NewLazyDLL("user32.dll")
@@ -23,25 +28,31 @@ var (
 // WebView2는 부모 창의 화면 좌표를 따로 기억해 두고 그 자리를 기준으로 입력기
 // 후보 창이나 드롭다운을 띄운다. 이 좌표는 NotifyParentWindowPositionChanged를
 // 불러야 갱신되는데, Wails는 창이 움직일 때(WM_MOVE)만 이를 호출한다. 그래서
-// 창을 옮기지 않고도 화면 좌표가 달라지는 경우 — 모니터 배치나 배율 변경,
-// 최소화 복원, 크기 변경 — 에는 좌표가 옛것으로 남아 후보 창이 화면 원점에
-// 그려진다. 창을 최소화했다 켜면 괜찮아지는 것도 그때 WM_MOVE가 오기 때문이다.
+// 창을 옮기지 않아도 웹뷰가 기억한 좌표가 어긋나는 상황 — 다른 창을 다녀오거나
+// 모니터 배치·배율이 바뀌거나 최소화에서 돌아오는 경우 — 에는 후보 창이 화면
+// 원점에 그려진다. 최소화했다 켜면 괜찮아지는 것도 그때 WM_MOVE가 오기 때문이다.
 //
-// Wails가 창 밖으로 WebView2 객체를 내주지 않으므로, 좌표가 흔들릴 만한
-// 시점마다 창에 WM_MOVE를 한 번 보내 Wails가 대신 알리도록 한다. Wails의
-// WM_MOVE 처리는 위치 통지와 이동 이벤트 발생뿐이라 다른 부작용은 없다.
+// 특히 다른 창을 갔다가 마우스로 다시 눌러 돌아오는 경우, 포커스가 최상위 창이
+// 아니라 웹뷰 자식 창으로 바로 돌아가서 WM_SETFOCUS가 오지 않는다. 그래서 창
+// 활성화(WM_ACTIVATE)에서 오는 이벤트까지 함께 본다.
+//
+// Wails가 창 밖으로 WebView2 객체를 내주지 않으므로, 좌표가 흔들릴 만한 시점마다
+// 창에 WM_MOVE를 한 번 보내 Wails가 대신 알리도록 한다. Wails의 WM_MOVE 처리는
+// 위치 통지와 이동 이벤트 발생뿐이라 다른 부작용은 없다.
 func FixIMEPosition(window *application.WebviewWindow) {
 	notify := func(*application.WindowEvent) {
-		handle := window.NativeWindow()
-		if handle == nil {
-			return
-		}
-		_, _, _ = procPostMessage.Call(uintptr(handle), wmMove, 0, 0)
+		notifyPositionChanged(window)
+		// 활성화 직후에는 아직 웹뷰가 포커스를 받기 전일 수 있어 한 번 더 보낸다.
+		time.AfterFunc(settleDelay, func() { notifyPositionChanged(window) })
 	}
 
 	// 이동(WindowDidMove)은 Wails가 이미 처리하므로 넣지 않는다.
 	// 넣으면 우리가 보낸 WM_MOVE가 다시 이 콜백을 불러 끝없이 돈다.
 	for _, event := range []events.WindowEventType{
+		// 다른 창을 다녀와 다시 활성화된 경우. 마우스로 눌러 돌아오면
+		// WindowClickActive, 키보드나 작업 표시줄로 돌아오면 WindowActive가 온다.
+		events.Windows.WindowActive,
+		events.Windows.WindowClickActive,
 		events.Windows.WindowSetFocus,
 		events.Windows.WindowRestore,
 		events.Windows.WindowUnMinimise,
@@ -51,4 +62,14 @@ func FixIMEPosition(window *application.WebviewWindow) {
 	} {
 		window.OnWindowEvent(event, notify)
 	}
+}
+
+// notifyPositionChanged는 창에 WM_MOVE를 보내 Wails가 웹뷰에 위치 변경을
+// 알리도록 한다. 창이 아직 없거나 이미 닫혔으면 아무것도 하지 않는다.
+func notifyPositionChanged(window *application.WebviewWindow) {
+	handle := window.NativeWindow()
+	if handle == nil {
+		return
+	}
+	_, _, _ = procPostMessage.Call(uintptr(handle), wmMove, 0, 0)
 }

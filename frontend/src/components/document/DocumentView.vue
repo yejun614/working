@@ -773,7 +773,9 @@ async function openBacklink(doc: Document) {
 }
 
 // 모달과 형식 드롭다운은 Esc로 닫는다.
+// 한글을 조합하는 중의 Esc는 입력기가 조합을 취소하려는 것이므로 넘긴다.
 function onKeydown(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) return
   if (event.key !== 'Escape') return
   if (errorMessage.value) closeError()
   else if (infoOpen.value) closeInfo()
