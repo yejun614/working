@@ -790,13 +790,11 @@ function onKeydown(event: KeyboardEvent) {
 
 // 사이드바 항목에 마우스를 올리면 본문 앞부분을 팝오버로 보여 준다.
 // 사이드바는 overflow: hidden이라 팝오버는 body로 내보내 띄운다.
-const PREVIEW_DELAY = 300
 const PREVIEW_LIMIT = 240
 const PREVIEW_MAX_HEIGHT = 220
 
 const hoverDocument = ref<Document | null>(null)
 const previewPosition = ref({ top: 0, left: 0 })
-let hoverTimer: ReturnType<typeof setTimeout> | undefined
 
 // 팝오버 요약. 마크다운 기호를 걷어내 읽을 수 있는 문장만 남긴다.
 function previewText(content?: string): string {
@@ -815,22 +813,18 @@ function previewText(content?: string): string {
   return plain.length > PREVIEW_LIMIT ? `${plain.slice(0, PREVIEW_LIMIT)}…` : plain
 }
 
+// 기다리지 않고 마우스를 올린 즉시 띄운다.
 function showPreview(doc: Document, event: MouseEvent) {
   const item = event.currentTarget as HTMLElement | null
   if (!item || dragged.value) return
-  if (hoverTimer) clearTimeout(hoverTimer)
-  hoverTimer = setTimeout(() => {
-    const rect = item.getBoundingClientRect()
-    // 아래쪽 항목에서도 팝오버가 화면 밖으로 나가지 않도록 위로 밀어 올린다.
-    const top = Math.min(rect.top, window.innerHeight - PREVIEW_MAX_HEIGHT - 16)
-    previewPosition.value = { top: Math.max(12, top), left: rect.right + 10 }
-    hoverDocument.value = doc
-  }, PREVIEW_DELAY)
+  const rect = item.getBoundingClientRect()
+  // 아래쪽 항목에서도 팝오버가 화면 밖으로 나가지 않도록 위로 밀어 올린다.
+  const top = Math.min(rect.top, window.innerHeight - PREVIEW_MAX_HEIGHT - 16)
+  previewPosition.value = { top: Math.max(12, top), left: rect.right + 10 }
+  hoverDocument.value = doc
 }
 
 function hidePreview() {
-  if (hoverTimer) clearTimeout(hoverTimer)
-  hoverTimer = undefined
   hoverDocument.value = null
 }
 
