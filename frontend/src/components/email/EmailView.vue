@@ -72,6 +72,8 @@ const selectedAccount = computed(() =>
 const canSend = computed(() => accounts.value.some(canSendMail))
 // 현재 폴더에서 읽지 않은 메일 수. 목록 헤더에 배지로 표시한다.
 const unreadCount = computed(() => messages.value.filter(m => m.unread).length)
+// 배지는 폴더 이름 옆에 붙는 작은 칩이라, 자릿수가 늘어도 너비가 커지지 않게 99+로 줄인다.
+const unreadBadge = computed(() => (unreadCount.value > 99 ? '99+' : String(unreadCount.value)))
 
 const selectedMessages = computed(() => messages.value.filter(m => selectedKeys.value.has(messageKey(m))))
 const allSelected = computed(() => messages.value.length > 0 && selectedKeys.value.size === messages.value.length)
@@ -739,8 +741,8 @@ onMounted(() => {
     <section v-if="listVisible" class="list-pane">
       <div class="list-header">
         <div class="list-title">
-          {{ selectedFolder }}
-          <span v-if="unreadCount" class="unread-badge" :title="`읽지 않은 메일 ${unreadCount}개`">{{ unreadCount }}</span>
+          <span class="list-folder">{{ selectedFolder }}</span>
+          <span v-if="unreadCount" class="unread-badge" :title="`읽지 않은 메일 ${unreadCount}개`">{{ unreadBadge }}</span>
         </div>
         <div class="list-actions">
           <button class="btn sm" :disabled="!messages.length" @click="toggleSelectAll">
@@ -1036,7 +1038,10 @@ onMounted(() => {
   font-size: 12px;
 }
 .move-select:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 폴더 이름이 길면 이름만 줄이고 배지는 온전히 남긴다. */
+.list-folder { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .unread-badge {
+  flex: 0 0 auto;
   min-width: 20px;
   padding: 1px 6px;
   border-radius: 10px;
@@ -1044,7 +1049,9 @@ onMounted(() => {
   color: #fff;
   font-size: 11px;
   font-weight: 700;
+  line-height: 1.5;
   text-align: center;
+  white-space: nowrap;
 }
 .list-actions { display: flex; gap: 6px; }
 .btn {
