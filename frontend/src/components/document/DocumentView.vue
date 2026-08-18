@@ -20,6 +20,7 @@ import { Service as DocumentService } from '../../../bindings/working/internal/m
 import type { DocType, Document, Folder } from '../../../bindings/working/internal/modules/document/types/models'
 import { isDarkMode } from '../../theme'
 import ResizeHandle from '../common/ResizeHandle.vue'
+import FolderPlusIcon from './FolderPlusIcon.vue'
 import { usePaneVisible, usePaneWidth } from '../../panes'
 
 const sidebarWidth = usePaneWidth('document:sidebar', 240)
@@ -856,7 +857,9 @@ onBeforeUnmount(() => {
       <div class="sidebar-header">
         <h1>문서</h1>
         <div class="header-buttons">
-          <button class="icon-btn" title="새 폴더" @click="createFolder()">⊞</button>
+          <button class="icon-btn" title="새 폴더" aria-label="새 폴더" @click="createFolder()">
+            <FolderPlusIcon />
+          </button>
           <button class="icon-btn" title="새 문서" @click="createDocument()">+</button>
         </div>
       </div>
@@ -916,7 +919,9 @@ onBeforeUnmount(() => {
                   >{{ row.folder!.name }}</span>
                   <span class="folder-count">{{ folderCount(row.folder!.id) }}</span>
                   <button class="icon-btn sm row-action" title="이 폴더에 새 문서" @click.stop="createDocument('', row.folder!.id)">+</button>
-                  <button class="icon-btn sm row-action" title="하위 폴더 추가" @click.stop="createFolder(row.folder!.id)">⊞</button>
+                  <button class="icon-btn sm row-action" title="하위 폴더 추가" aria-label="하위 폴더 추가" @click.stop="createFolder(row.folder!.id)">
+                    <FolderPlusIcon :size="15" />
+                  </button>
                   <button class="icon-btn sm danger row-action" title="폴더 삭제" @click.stop="deleteFolder(row.folder!)">✕</button>
                 </div>
               </template>
