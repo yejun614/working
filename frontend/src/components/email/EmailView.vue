@@ -753,25 +753,6 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="hasBulkSelection" class="bulk-bar">
-        <span class="bulk-count">{{ selectedKeys.size }}개 선택</span>
-        <template v-if="!isLocalDrafts">
-          <button class="btn sm" :disabled="bulkRunning" @click="bulkMarkRead(true)">읽음</button>
-          <button class="btn sm" :disabled="bulkRunning" @click="bulkMarkRead(false)">안 읽음</button>
-          <select
-            v-model="moveTarget"
-            class="move-select"
-            :disabled="bulkRunning || !moveTargets.length"
-            @change="moveMessages(selectedMessages, moveTarget)"
-          >
-            <option value="">폴더 이동…</option>
-            <option v-for="folder in moveTargets" :key="folder" :value="folder">{{ folder }}</option>
-          </select>
-        </template>
-        <button class="btn sm danger-btn" @click="deleteMessages(selectedMessages)">삭제</button>
-        <button class="btn sm bulk-clear" @click="clearSelection">선택 해제</button>
-      </div>
-
       <div v-if="error" class="alert error">
         <span class="alert-message">{{ error }}</span>
         <button class="btn sm alert-copy" type="button" @click="copyError">오류 복사</button>
@@ -811,6 +792,26 @@ onMounted(() => {
             {{ loadingMore ? '불러오는 중…' : '더 불러오기' }}
           </button>
         </div>
+      </div>
+
+      <!-- 선택 제어 메뉴는 목록 아래에 둔다. 목록 위에 끼어들면 줄이 밀려 마우스 아래의 메일이 바뀐다. -->
+      <div v-if="hasBulkSelection" class="bulk-bar">
+        <span class="bulk-count">{{ selectedKeys.size }}개 선택</span>
+        <template v-if="!isLocalDrafts">
+          <button class="btn sm" :disabled="bulkRunning" @click="bulkMarkRead(true)">읽음</button>
+          <button class="btn sm" :disabled="bulkRunning" @click="bulkMarkRead(false)">안 읽음</button>
+          <select
+            v-model="moveTarget"
+            class="move-select"
+            :disabled="bulkRunning || !moveTargets.length"
+            @change="moveMessages(selectedMessages, moveTarget)"
+          >
+            <option value="">폴더 이동…</option>
+            <option v-for="folder in moveTargets" :key="folder" :value="folder">{{ folder }}</option>
+          </select>
+        </template>
+        <button class="btn sm danger-btn" @click="deleteMessages(selectedMessages)">삭제</button>
+        <button class="btn sm bulk-clear" @click="clearSelection">선택 해제</button>
       </div>
     </section>
 
@@ -1017,14 +1018,16 @@ onMounted(() => {
   border-bottom: 1px solid var(--border);
 }
 .list-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-weight: 600; }
+/* 목록 아래에 붙는 선택 제어 줄. 목록 칸이 아래에서만 줄어들어 보이는 줄은 제자리에 남는다. */
 .bulk-bar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  flex-shrink: 0;
   gap: 6px;
   padding: 8px 16px;
   background: var(--panel-2);
-  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
 }
 .bulk-count { margin-right: 2px; color: var(--accent); font-size: 12px; font-weight: 600; }
 .bulk-clear { margin-left: auto; }
