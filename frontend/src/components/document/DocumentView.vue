@@ -634,9 +634,11 @@ async function save() {
   const current = selectedDocument.value
   if (!current) return
 
+  // 저장 뒤 입력칸을 되돌려도 되는지 판단하려고 보낸 제목을 기억해 둔다.
+  const sentTitle = titleInput.value
   const payload: Document = {
     ...current,
-    title: titleInput.value.trim() || current.title,
+    title: sentTitle.trim() || current.title,
     type: docType.value,
     content: currentContent(),
   }
@@ -644,7 +646,9 @@ async function save() {
     const saved = await DocumentService.Save(payload)
     if (!saved) return
     replaceInList(saved)
-    titleInput.value = saved.title
+    // 제목을 지우고 새 제목을 고민하는 중이거나 저장하는 사이에 더 고쳤다면 입력칸을 두고 본다.
+    // 원래 제목이 저절로 다시 채워지면 편집을 방해한다.
+    if (sentTitle.trim() && titleInput.value === sentTitle) titleInput.value = saved.title
   } catch (e) {
     reportError(e)
   }
@@ -1004,7 +1008,7 @@ onBeforeUnmount(() => {
         <input
           v-model="titleInput"
           class="title-input"
-          placeholder="문서 제목"
+          :placeholder="selectedDocument?.title || '문서 제목'"
           :disabled="!selectedId"
           @input="onTitleInput"
         />
