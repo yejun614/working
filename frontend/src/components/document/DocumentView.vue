@@ -813,6 +813,13 @@ function previewText(content?: string): string {
   return plain.length > PREVIEW_LIMIT ? `${plain.slice(0, PREVIEW_LIMIT)}…` : plain
 }
 
+// 줄 어디에 마우스를 올려도 미리보기가 뜨도록 줄 전체에서 받는다.
+// 문서가 아닌 줄(폴더·빈 안내)로 옮겼으면 닫는다.
+function onRowEnter(row: TreeRow, event: MouseEvent) {
+  if (row.kind === 'document' && row.document) showPreview(row.document, event)
+  else hidePreview()
+}
+
 // 기다리지 않고 마우스를 올린 즉시 띄운다.
 function showPreview(doc: Document, event: MouseEvent) {
   const item = event.currentTarget as HTMLElement | null
@@ -865,7 +872,6 @@ onBeforeUnmount(() => {
             :class="{ active: doc.id === selectedId }"
             @click="selectDocument(doc.id)"
             @mouseenter="showPreview(doc, $event)"
-            @mouseleave="hidePreview"
           >
             <div class="row-main">
               <span class="doc-type" :title="typeInfo(doc.type).label">{{ typeInfo(doc.type).icon }}</span>
@@ -891,6 +897,7 @@ onBeforeUnmount(() => {
               ]"
               :style="{ paddingLeft: `${10 + row.depth * 14}px` }"
               :draggable="row.kind !== 'empty'"
+              @mouseenter="onRowEnter(row, $event)"
               @pointerdown="onRowPointerDown(row, $event)"
               @pointerup="onRowPointerUp"
               @dragstart="startDrag(row, $event)"
@@ -916,11 +923,7 @@ onBeforeUnmount(() => {
 
               <!-- 문서 줄 -->
               <template v-else-if="row.kind === 'document'">
-                <div
-                  class="row-main"
-                  @mouseenter="showPreview(row.document!, $event)"
-                  @mouseleave="hidePreview"
-                >
+                <div class="row-main">
                   <span class="doc-type" :title="typeInfo(row.document!.type).label">{{ typeInfo(row.document!.type).icon }}</span>
                   <span class="row-name">{{ row.document!.title }}</span>
                   <button class="icon-btn sm danger row-action" title="문서 삭제" @click.stop="deleteDocument(row.document!)">✕</button>
@@ -937,6 +940,7 @@ onBeforeUnmount(() => {
           <div
             class="root-drop"
             :class="{ 'drop-target': dropHint && dropHint.key === 'root' }"
+            @mouseenter="hidePreview"
             @dragover.prevent="onRootDragOver"
             @drop.prevent="onRootDrop"
           >
@@ -951,7 +955,7 @@ onBeforeUnmount(() => {
       <div
         v-if="hoverDocument"
         class="doc-preview"
-        :style="{ top: `${previewPosition.top}px`, left: `${previewPosition.left}px` }"
+        :style="{ transform: `translate3d(${previewPosition.left}px, ${previewPosition.top}px, 0)` }"
       >
         <strong class="preview-title">{{ hoverDocument.title }}</strong>
         <span class="preview-date">{{ typeInfo(hoverDocument.type).label }} · {{ formatDate(hoverDocument.updatedAt) }}</span>
@@ -1209,6 +1213,11 @@ onBeforeUnmount(() => {
 /* 목록 호버 팝오버. body로 옮겨 그리므로 위치는 인라인 스타일이 정한다. */
 .doc-preview {
   position: fixed;
+  top: 0;
+  left: 0;
+  /* 위아래 다른 항목으로 옮길 때 팝오버가 미끄러지듯 따라온다. */
+  transition: transform 150ms ease-out;
+  will-change: transform;
   z-index: 60;
   width: 300px;
   max-height: 220px;
