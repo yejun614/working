@@ -920,7 +920,7 @@ onBeforeUnmount(() => {
                   <span class="folder-count">{{ folderCount(row.folder!.id) }}</span>
                   <button class="icon-btn sm row-action" title="이 폴더에 새 문서" @click.stop="createDocument('', row.folder!.id)">+</button>
                   <button class="icon-btn sm row-action" title="하위 폴더 추가" aria-label="하위 폴더 추가" @click.stop="createFolder(row.folder!.id)">
-                    <FolderPlusIcon :size="15" />
+                    <FolderPlusIcon :size="17" />
                   </button>
                   <button class="icon-btn sm danger row-action" title="폴더 삭제" @click.stop="deleteFolder(row.folder!)">✕</button>
                 </div>
@@ -1250,18 +1250,19 @@ onBeforeUnmount(() => {
 }
 .preview-body.empty { font-style: italic; padding: 0; margin-top: 8px; }
 
+/* 아이콘만 든 버튼은 안쪽 그림이 알아볼 만한 크기로 남게 넉넉히 잡는다. */
 .icon-btn {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 4px;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
-.icon-btn.sm { width: 20px; height: 20px; font-size: 11px; }
+.icon-btn.sm { width: 24px; height: 24px; font-size: 12px; }
 .icon-btn.danger:hover { color: var(--danger); border-color: var(--danger); }
 
 .document-main {
