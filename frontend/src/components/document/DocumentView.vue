@@ -18,6 +18,7 @@ import '@toast-ui/editor-plugin-table-merged-cell/dist/toastui-editor-plugin-tab
 import uml from '@toast-ui/editor-plugin-uml'
 import { Service as DocumentService } from '../../../bindings/working/internal/modules/document'
 import type { DocType, Document, Folder } from '../../../bindings/working/internal/modules/document/types/models'
+import { Dialogs, Events } from '@wailsio/runtime'
 import { isDarkMode } from '../../theme'
 import ResizeHandle from '../common/ResizeHandle.vue'
 import FolderPlusIcon from './FolderPlusIcon.vue'
@@ -672,6 +673,62 @@ async function createDocument(title = '', folderId = '') {
   }
 }
 
+/* ---------- 외부 파일 가져오기 / 내보내기 ---------- */
+
+// 파일 선택 창에서 문서로 가져올 텍스트 계열 확장자를 안내한다.
+const IMPORT_FILTER = { DisplayName: '문서 파일', Pattern: '*.md;*.markdown;*.txt' }
+
+// 다이얼로그 취소는 오류가 아니라 사용자가 그만둔 것이므로 조용히 무시한다.
+function isDialogCancel(e: unknown): boolean {
+  return e instanceof Error && /cancelled by user|cancelled/i.test(e.message)
+}
+
+// 가져오기 버튼: 파일 선택 창을 열어 선택한 파일을 문서로 만든다.
+// 지금 보고 있는 폴더 안으로 가져오면 목록이 그대로 유지된다.
+async function importFile() {
+  await flushSave()
+  try {
+    const path = await Dialogs.OpenFile({
+      Title: '문서로 가져올 파일 선택',
+      Filters: [IMPORT_FILTER],
+      AllowsMultipleSelection: false,
+    })
+    if (!path) return
+    const targetFolder = selectedDocument.value?.folderId || ''
+    const doc = await DocumentService.Import(path, targetFolder)
+    if (!doc) return
+    expandFolder(targetFolder)
+    await refreshDocuments()
+    selectedId.value = doc.id
+    titleInput.value = doc.title
+    applyType(typeInfo(doc.type).id, doc.content || '')
+  } catch (e) {
+    if (!isDialogCancel(e)) reportError(e)
+  }
+}
+
+// 내보내기 버튼: 저장 창을 열어 지금 문서의 본문을 파일로 쓴다.
+async function exportFile() {
+  const current = selectedDocument.value
+  if (!current) return
+  try {
+    const path = await Dialogs.SaveFile({
+      Title: '문서를 내보낼 위치 선택',
+      Filename: `${current.title}.md`,
+      Filters: [IMPORT_FILTER],
+    })
+    if (!path) return
+    await DocumentService.Export(path, current)
+  } catch (e) {
+    if (!isDialogCancel(e)) reportError(e)
+  }
+}
+
+// 파일을 창에 끌어다 놓았을 때 백엔드가 가져온 뒤 목록을 다시 그린다.
+function onFilesImported() {
+  refreshDocuments()
+}
+
 async function deleteDocument(doc: Document) {
   hidePreview()
   if (!confirm(`문서 "${doc.title}" 을(를) 삭제할까요?`)) return
@@ -839,6 +896,8 @@ function hidePreview() {
 onMounted(async () => {
   createEditor('')
   window.addEventListener('keydown', onKeydown)
+  // 창으로 끌어다 놓은 파일이 문서로 가져와지면 목록을 다시 그린다.
+  Events.On('document:files-imported', onFilesImported)
   await refreshTree()
   if (documents.value.length) await selectDocument(documents.value[0].id)
 })
@@ -846,13 +905,14 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
   window.removeEventListener('keydown', onKeydown)
+  Events.Off('document:files-imported')
   hidePreview()
   destroyEditor()
 })
 </script>
 
 <template>
-  <div class="document-layout" :style="layoutColumns">
+  <div class="document-layout" :style="layoutColumns" data-file-drop-target>
     <aside v-if="sidebarVisible" class="document-sidebar">
       <div class="sidebar-header">
         <h1>문서</h1>
@@ -860,6 +920,7 @@ onBeforeUnmount(() => {
           <button class="icon-btn" title="새 폴더" aria-label="새 폴더" @click="createFolder()">
             <FolderPlusIcon />
           </button>
+          <button class="icon-btn" title="파일 가져오기" aria-label="파일 가져오기" @click="importFile">⇩</button>
           <button class="icon-btn" title="새 문서" @click="createDocument()">+</button>
         </div>
       </div>
@@ -1025,6 +1086,14 @@ onBeforeUnmount(() => {
           aria-label="자동 줄바꿈"
           @click="toggleWrap"
         >↵</button>
+        <button
+          class="header-icon-button"
+          type="button"
+          :disabled="!selectedId"
+          title="파일로 내보내기"
+          aria-label="파일로 내보내기"
+          @click="exportFile"
+        >⇪</button>
         <button
           class="header-icon-button"
           type="button"

@@ -10,6 +10,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -148,6 +150,61 @@ func minDocumentOrder(docs []types.Document, folderID string) int {
 		}
 	}
 	return min
+}
+
+// importFileExtensions는 외부 파일을 가져올 때 본문으로 읽는 확장자이다.
+// 그 밖의 파일도 읽을 수는 있으나, 문서로 만들기에 적합한 텍스트 계열만 기본 필터로 안내한다.
+var importFileExtensions = []string{".md", ".markdown", ".txt"}
+
+// Import는 외부 파일을 읽어 새 문서로 만든다.
+// 제목은 파일 이름(확장자 제외)으로 하고, 본문은 파일 내용 그대로 담는다.
+// folderID를 주면 그 폴더 안에 만들고, 비워 두면 폴더 밖에 만든다.
+// 같은 제목이 이미 있으면 뒤에 번호를 붙여 유일한 제목으로 만든다.
+func (s *Service) Import(path string, folderID string) (*types.Document, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("파일을 읽을 수 없습니다: %w", err)
+	}
+	title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	// Create로 제목 충돌·폴더 검증·순서 처리를 재사용한 뒤,
+	// 내용을 채워 Save로 저장하면 위키 링크도 함께 계산된다.
+	doc, err := s.Create(title, folderID, types.TypeMarkdown)
+	if err != nil {
+		return nil, err
+	}
+	doc.Content = string(content)
+	return s.Save(doc)
+}
+
+// Export는 문서 내용을 지정한 파일 경로에 쓴다.
+// 문서는 존재해야 하며, 본문은 마크다운 원문 그대로 저장한다.
+func (s *Service) Export(path string, doc *types.Document) error {
+	if doc == nil || doc.ID == "" {
+		return fmt.Errorf("문서 ID가 필요합니다")
+	}
+	found, err := s.Get(doc.ID)
+	if err != nil {
+		return err
+	}
+	if found == nil {
+		return fmt.Errorf("문서를 찾을 수 없습니다: %s", doc.ID)
+	}
+	return os.WriteFile(path, []byte(found.Content), 0o644)
+}
+
+// ImportPaths는 외부 파일 여러 개를 한꺼번에 가져와 새 문서로 만든다.
+// 파일을 창에 끌어다 놓았을 때 백엔드가 받은 경로 목록을 처리하는 데 쓴다.
+// 폴더 지정 없이 최상위로 만들고, 하나라도 실패하면 그 시점에 멈춘다.
+func (s *Service) ImportPaths(paths []string) ([]types.Document, error) {
+	out := make([]types.Document, 0, len(paths))
+	for _, path := range paths {
+		doc, err := s.Import(path, "")
+		if err != nil {
+			return out, err
+		}
+		out = append(out, *doc)
+	}
+	return out, nil
 }
 
 // existingFolderID는 폴더가 실제로 있을 때만 그 ID를 돌려준다.

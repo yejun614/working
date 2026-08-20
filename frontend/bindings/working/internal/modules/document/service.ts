@@ -56,6 +56,14 @@ export function DeleteFolder(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * Export는 문서 내용을 지정한 파일 경로에 쓴다.
+ * 문서는 존재해야 하며, 본문은 마크다운 원문 그대로 저장한다.
+ */
+export function Export(path: string, doc: types$0.Document | null): $CancellablePromise<void> {
+    return $Call.ByID(334758145, path, doc);
+}
+
+/**
  * FindByTitle은 제목으로 문서를 찾는다. 대소문자는 무시하며, 없으면 nil을 반환한다.
  */
 export function FindByTitle(title: string): $CancellablePromise<types$0.Document | null> {
@@ -76,6 +84,25 @@ export function Folders(): $CancellablePromise<types$0.Folder[] | null> {
  */
 export function Get(id: string): $CancellablePromise<types$0.Document | null> {
     return $Call.ByID(2903912901, id);
+}
+
+/**
+ * Import는 외부 파일을 읽어 새 문서로 만든다.
+ * 제목은 파일 이름(확장자 제외)으로 하고, 본문은 파일 내용 그대로 담는다.
+ * folderID를 주면 그 폴더 안에 만들고, 비워 두면 폴더 밖에 만든다.
+ * 같은 제목이 이미 있으면 뒤에 번호를 붙여 유일한 제목으로 만든다.
+ */
+export function Import(path: string, folderID: string): $CancellablePromise<types$0.Document | null> {
+    return $Call.ByID(84518258, path, folderID);
+}
+
+/**
+ * ImportPaths는 외부 파일 여러 개를 한꺼번에 가져와 새 문서로 만든다.
+ * 파일을 창에 끌어다 놓았을 때 백엔드가 받은 경로 목록을 처리하는 데 쓴다.
+ * 폴더 지정 없이 최상위로 만들고, 하나라도 실패하면 그 시점에 멈춘다.
+ */
+export function ImportPaths(paths: string[] | null): $CancellablePromise<types$0.Document[] | null> {
+    return $Call.ByID(3133077798, paths);
 }
 
 /**

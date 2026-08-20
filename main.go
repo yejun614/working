@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"working/internal/config"
 	accountmod "working/internal/modules/account"
@@ -80,9 +81,10 @@ func main() {
 	})
 
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:  "working",
-		Width:  1000,
-		Height: 700,
+		Title:          "working",
+		Width:          1000,
+		Height:         700,
+		EnableFileDrop: true, // 외부 파일을 창으로 끌어다 놓으면 문서 모듈이 가져온다.
 		Mac: application.MacWindow{
 			InvisibleTitleBarHeight: 50,
 			Backdrop:                application.MacBackdropTranslucent,
@@ -94,6 +96,21 @@ func main() {
 
 	// 창을 다녀왔을 때 웹뷰가 키보드 포커스를 되찾도록 보정한다(한국어 입력기 문제).
 	platform.FixWebviewFocus(window)
+
+	// 외부 파일을 창으로 끌어다 놓으면 해당 파일을 문서로 가져온다.
+	// 드랍한 파일 경로는 OS에서 온 것이므로 신뢰할 수 있고, 실패 시 로그로 남긴다.
+	window.OnWindowEvent(events.Common.WindowFilesDropped, func(event *application.WindowEvent) {
+		paths := event.Context().DroppedFiles()
+		if len(paths) == 0 {
+			return
+		}
+		if _, err := documentService.ImportPaths(paths); err != nil {
+			log.Printf("파일 가져오기 실패: %v", err)
+			return
+		}
+		// 프론트가 목록을 다시 그릴 수 있도록 갱신 이벤트를 보낸다.
+		window.EmitEvent("document:files-imported")
+	})
 
 	err = app.Run()
 	if err != nil {
