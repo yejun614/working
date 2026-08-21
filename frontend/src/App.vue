@@ -292,7 +292,9 @@ button {
   position: absolute;
   top: 42px;
   right: 8px;
-  z-index: 20;
+  /* 모듈 화면 위에 떠야 한다. 문서 모듈의 편집기가 z-index 20을 쓰고 그 안의
+     도구 모음·풍선이 40까지 올라가므로, 그보다 높은 층에 둔다. */
+  z-index: 50;
   min-width: 260px;
   max-height: calc(100vh - 60px);
   overflow-y: auto;
