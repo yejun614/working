@@ -66,7 +66,24 @@ type Document struct {
 	// 순서를 한 번도 바꾸지 않은 문서는 0이라 최근 수정순으로 정렬된다.
 	Order int `json:"order,omitempty"`
 
+	// ReadOnly는 참이면 문서를 수정할 수 없다.
+	// 다 쓴 문서를 실수로 고치거나 지우지 않도록 잠가 두는 용도이다.
+	ReadOnly bool `json:"readOnly,omitempty"`
+
+	// Locked는 참이면 본문이 암호로 잠겨 암호화된 채 보관된다.
+	// 암호를 확인하기 전에는 목록·검색·미리보기에 본문이 보이지 않는다.
+	Locked bool `json:"locked,omitempty"`
+
+	// Hint는 잠긴 문서의 암호 힌트다. 암호 자체는 어디에도 보관하지 않으므로
+	// 잊었을 때 떠올릴 단서를 사용자가 직접 남겨 두는 자리이다.
+	Hint string `json:"hint,omitempty"`
+
+	// Unlocked는 이번 실행에서 암호를 확인해 열어 둔 상태인지 알려준다.
+	// 화면에 보낼 때만 채우는 값이고 저장하지 않으므로, 앱을 다시 켜면 꺼진다.
+	Unlocked bool `json:"unlocked,omitempty"`
+
 	// Content는 본문이다. 형식과 무관하게 마크다운 원문으로 보관한다.
+	// 잠긴 문서는 암호화된 문자열이 들어가며, 암호를 확인한 뒤에만 본문으로 바뀐다.
 	Content string `json:"content"`
 
 	// Links는 본문이 참조하는 다른 문서 제목 목록이다.

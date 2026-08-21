@@ -116,6 +116,17 @@ export function List(): $CancellablePromise<types$0.Document[] | null> {
 }
 
 /**
+ * Lock은 문서를 암호로 잠근다.
+ * 본문은 암호에서 만든 키로 암호화해 보관하므로, 암호를 모르면 저장 파일을
+ * 직접 열어 보아도 내용을 알 수 없다. 암호는 어디에도 저장하지 않는다.
+ * hint는 암호를 잊었을 때 떠올릴 짧은 단서이며 비워 둘 수 있다.
+ * 방금 정한 암호이므로 이번 실행에서는 열어 둔 채로 편집을 이어갈 수 있다.
+ */
+export function Lock(id: string, password: string, hint: string): $CancellablePromise<types$0.Document | null> {
+    return $Call.ByID(2977574308, id, password, hint);
+}
+
+/**
  * MoveDocument는 문서를 다른 폴더의 원하는 자리로 옮긴다.
  * folderID가 비면 폴더 밖으로 빼고, index는 그 폴더 안에서 몇 번째에 둘지다.
  * 옮기기는 내용 변경이 아니므로 마지막 수정 시각은 건드리지 않는다.
@@ -130,6 +141,21 @@ export function MoveDocument(id: string, folderID: string, index: number): $Canc
  */
 export function MoveFolder(id: string, parentID: string, index: number): $CancellablePromise<types$0.Folder | null> {
     return $Call.ByID(2169345850, id, parentID, index);
+}
+
+/**
+ * Relock은 열어 둔 문서를 다시 잠근다. 암호는 그대로 남는다.
+ * 자리를 비울 때 눌러 두면 다시 볼 때 암호를 물어본다.
+ */
+export function Relock(id: string): $CancellablePromise<void> {
+    return $Call.ByID(2834383541, id);
+}
+
+/**
+ * RemoveLock은 암호를 확인한 뒤 잠금을 없애고 본문을 평문으로 되돌린다.
+ */
+export function RemoveLock(id: string, password: string): $CancellablePromise<types$0.Document | null> {
+    return $Call.ByID(734869888, id, password);
 }
 
 /**
@@ -148,9 +174,27 @@ export function Save(doc: types$0.Document | null): $CancellablePromise<types$0.
 }
 
 /**
+ * SetReadOnly는 문서를 읽기 전용(수정 금지)으로 바꾸거나 되돌린다.
+ * 읽기 전용인 동안에는 본문·제목을 저장할 수 없고 문서도 지울 수 없다.
+ * 본문을 건드리지 않으므로 마지막 수정 시각도 바꾸지 않는다.
+ */
+export function SetReadOnly(id: string, readOnly: boolean): $CancellablePromise<types$0.Document | null> {
+    return $Call.ByID(3143475667, id, readOnly);
+}
+
+/**
  * SetType은 문서를 여는 편집기 형식을 바꾼다.
  * 본문은 그대로 두므로 마지막 수정 시각도 바꾸지 않는다.
  */
 export function SetType(id: string, docType: types$0.DocType): $CancellablePromise<types$0.Document | null> {
     return $Call.ByID(2261232017, id, docType);
+}
+
+/**
+ * Unlock은 암호를 확인해 잠긴 문서를 이번 실행 동안 열어 둔다.
+ * 성공하면 본문이 담긴 문서를 돌려주고, 이후 저장도 다시 가능해진다.
+ * 암호가 틀리면 그 사실만 알리는 오류를 돌려준다.
+ */
+export function Unlock(id: string, password: string): $CancellablePromise<types$0.Document | null> {
+    return $Call.ByID(3033145267, id, password);
 }

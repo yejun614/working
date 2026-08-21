@@ -9,11 +9,13 @@ package document
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"working/internal/modules/document/store"
@@ -26,9 +28,22 @@ const defaultTitle = "제목 없는 문서"
 // defaultFolderName은 이름 없이 만든 폴더에 붙는 기본 이름이다.
 const defaultFolderName = "새 폴더"
 
+// errReadOnly는 읽기 전용 문서를 고치거나 지우려 할 때의 오류이다.
+var errReadOnly = errors.New("읽기 전용 문서입니다. 수정하려면 읽기 전용을 먼저 끄세요")
+
+// errStillLocked는 암호를 확인하지 않은 잠긴 문서를 다루려 할 때의 오류이다.
+var errStillLocked = errors.New("잠긴 문서입니다. 암호를 먼저 입력하세요")
+
 // Service는 프론트엔드에 바인딩되는 문서 모듈 서비스이다.
 type Service struct {
 	store *store.Store
+
+	// mu는 아래 keys를 지킨다. 프론트엔드 호출이 동시에 들어올 수 있다.
+	mu sync.Mutex
+
+	// keys는 이번 실행에서 암호를 확인한 문서의 복호화 키이다.
+	// 암호 자체는 어디에도 남기지 않으므로 앱을 다시 켜면 다시 물어본다.
+	keys map[string]*lockKey
 }
 
 // NewService는 문서 모듈 Service를 생성한다.
@@ -37,7 +52,50 @@ func NewService() (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{store: st}, nil
+	return &Service{store: st, keys: make(map[string]*lockKey)}, nil
+}
+
+// sessionKey는 이번 실행에서 열어 둔 문서의 키를 돌려준다. 없으면 nil이다.
+func (s *Service) sessionKey(id string) *lockKey {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.keys[id]
+}
+
+// rememberKey는 암호를 확인한 문서의 키를 앱이 켜져 있는 동안 기억한다.
+func (s *Service) rememberKey(id string, key *lockKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keys[id] = key
+}
+
+// forgetKey는 기억해 둔 키를 지운다. 다시 잠글 때와 문서를 지울 때 쓴다.
+func (s *Service) forgetKey(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.keys, id)
+}
+
+// present는 저장된 문서를 화면에 보낼 모습으로 다듬는다.
+// 잠긴 문서는 본문이 암호화되어 있으므로, 이번 실행에서 암호를 확인한 문서만
+// 본문을 풀어 담고 나머지는 본문을 비워 목록·검색·미리보기에 새지 않게 한다.
+func (s *Service) present(doc *types.Document) {
+	// 타입을 도입하기 전에 만든 문서에는 값이 없으므로 마크다운으로 채워 보낸다.
+	doc.Type = types.NormalizeType(doc.Type)
+	if !doc.Locked {
+		return
+	}
+	if key := s.sessionKey(doc.ID); key != nil {
+		if plain, err := key.open(doc.Content); err == nil {
+			doc.Content = plain
+			doc.Links = ParseLinks(plain)
+			doc.Unlocked = true
+			return
+		}
+	}
+	doc.Content = ""
+	doc.Links = nil
+	doc.Unlocked = false
 }
 
 // ServiceShutdown은 Wails 종료 시 호출되는 훅이다.
@@ -53,9 +111,8 @@ func (s *Service) List() ([]types.Document, error) {
 		return nil, err
 	}
 	sortDocuments(docs)
-	// 타입을 도입하기 전에 만든 문서에는 값이 없으므로 마크다운으로 채워 보낸다.
 	for i := range docs {
-		docs[i].Type = types.NormalizeType(docs[i].Type)
+		s.present(&docs[i])
 	}
 	return docs, nil
 }
@@ -91,7 +148,7 @@ func (s *Service) Get(id string) (*types.Document, error) {
 	if err != nil || doc == nil {
 		return doc, err
 	}
-	doc.Type = types.NormalizeType(doc.Type)
+	s.present(doc)
 	return doc, nil
 }
 
@@ -104,6 +161,7 @@ func (s *Service) FindByTitle(title string) (*types.Document, error) {
 	target := normalizeTitle(title)
 	for i := range docs {
 		if normalizeTitle(docs[i].Title) == target {
+			s.present(&docs[i])
 			return &docs[i], nil
 		}
 	}
@@ -189,6 +247,10 @@ func (s *Service) Export(path string, doc *types.Document) error {
 	if found == nil {
 		return fmt.Errorf("문서를 찾을 수 없습니다: %s", doc.ID)
 	}
+	// 잠긴 문서는 암호를 확인해야 본문이 채워진다. 빈 파일이 나가지 않게 막는다.
+	if found.Locked && !found.Unlocked {
+		return errStillLocked
+	}
 	return os.WriteFile(path, []byte(found.Content), 0o644)
 }
 
@@ -245,6 +307,18 @@ func (s *Service) Save(doc *types.Document) (*types.Document, error) {
 	if index < 0 {
 		return nil, fmt.Errorf("문서를 찾을 수 없습니다: %s", doc.ID)
 	}
+	// 읽기 전용 문서는 화면에서도 편집을 막지만, 자동 저장이 뒤늦게 도착할 수
+	// 있으므로 저장 단계에서 한 번 더 막는다.
+	if docs[index].ReadOnly {
+		return nil, errReadOnly
+	}
+	// 잠긴 문서는 암호를 확인한 뒤에만 저장할 수 있다.
+	var key *lockKey
+	if docs[index].Locked {
+		if key = s.sessionKey(doc.ID); key == nil {
+			return nil, errStillLocked
+		}
+	}
 
 	oldTitle := docs[index].Title
 	newTitle := strings.TrimSpace(doc.Title)
@@ -265,14 +339,30 @@ func (s *Service) Save(doc *types.Document) (*types.Document, error) {
 	docs[index].Title = newTitle
 	docs[index].Type = types.NormalizeType(doc.Type)
 	docs[index].FolderID = folderID
-	docs[index].Content = doc.Content
-	docs[index].Links = ParseLinks(doc.Content)
+	if key != nil {
+		// 잠긴 문서는 본문을 암호화해 넣고, 링크 목록도 남기지 않는다.
+		// 링크 목록은 제목이라 그 자체로 내용을 짐작할 수 있기 때문이다.
+		sealed, err := key.seal(doc.Content)
+		if err != nil {
+			return nil, err
+		}
+		docs[index].Content = sealed
+		docs[index].Links = nil
+	} else {
+		docs[index].Content = doc.Content
+		docs[index].Links = ParseLinks(doc.Content)
+	}
 	docs[index].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
 	// 제목이 바뀌었으면 다른 문서가 걸어 둔 링크가 끊기지 않게 함께 고친다.
 	if normalizeTitle(newTitle) != normalizeTitle(oldTitle) {
 		for i := range docs {
 			if i == index {
+				continue
+			}
+			// 잠긴 문서의 본문은 암호화되어 있어 링크를 고칠 수 없다.
+			// 암호를 넣고 열면 예전 제목이 남아 있으므로 그때 직접 고쳐야 한다.
+			if docs[i].Locked {
 				continue
 			}
 			updated := RenameLinks(docs[i].Content, oldTitle, newTitle)
@@ -288,6 +378,7 @@ func (s *Service) Save(doc *types.Document) (*types.Document, error) {
 		return nil, err
 	}
 	saved := docs[index]
+	s.present(&saved)
 	return &saved, nil
 }
 
@@ -300,14 +391,23 @@ func (s *Service) Delete(id string) error {
 	}
 	kept := make([]types.Document, 0, len(docs))
 	for _, doc := range docs {
-		if doc.ID != id {
-			kept = append(kept, doc)
+		if doc.ID == id {
+			// 읽기 전용은 실수로 지우는 것까지 막는다.
+			if doc.ReadOnly {
+				return errReadOnly
+			}
+			continue
 		}
+		kept = append(kept, doc)
 	}
 	if len(kept) == len(docs) {
 		return fmt.Errorf("문서를 찾을 수 없습니다: %s", id)
 	}
-	return s.store.Replace(kept)
+	if err := s.store.Replace(kept); err != nil {
+		return err
+	}
+	s.forgetKey(id)
+	return nil
 }
 
 // Backlinks는 이 문서를 링크하고 있는 문서를 최근 수정순으로 반환한다.
@@ -617,6 +717,141 @@ func (s *Service) SetType(id string, docType types.DocType) (*types.Document, er
 		return &changed, nil
 	}
 	return nil, fmt.Errorf("문서를 찾을 수 없습니다: %s", id)
+}
+
+// findDocument는 목록에서 문서의 자리를 찾는다.
+func findDocument(docs []types.Document, id string) (int, error) {
+	for i := range docs {
+		if docs[i].ID == id {
+			return i, nil
+		}
+	}
+	return -1, fmt.Errorf("문서를 찾을 수 없습니다: %s", id)
+}
+
+// SetReadOnly는 문서를 읽기 전용(수정 금지)으로 바꾸거나 되돌린다.
+// 읽기 전용인 동안에는 본문·제목을 저장할 수 없고 문서도 지울 수 없다.
+// 본문을 건드리지 않으므로 마지막 수정 시각도 바꾸지 않는다.
+func (s *Service) SetReadOnly(id string, readOnly bool) (*types.Document, error) {
+	docs, err := s.store.All()
+	if err != nil {
+		return nil, err
+	}
+	index, err := findDocument(docs, id)
+	if err != nil {
+		return nil, err
+	}
+	docs[index].ReadOnly = readOnly
+	if err := s.store.Replace(docs); err != nil {
+		return nil, err
+	}
+	changed := docs[index]
+	s.present(&changed)
+	return &changed, nil
+}
+
+// Lock은 문서를 암호로 잠근다.
+// 본문은 암호에서 만든 키로 암호화해 보관하므로, 암호를 모르면 저장 파일을
+// 직접 열어 보아도 내용을 알 수 없다. 암호는 어디에도 저장하지 않는다.
+// hint는 암호를 잊었을 때 떠올릴 짧은 단서이며 비워 둘 수 있다.
+// 방금 정한 암호이므로 이번 실행에서는 열어 둔 채로 편집을 이어갈 수 있다.
+func (s *Service) Lock(id string, password string, hint string) (*types.Document, error) {
+	if strings.TrimSpace(password) == "" {
+		return nil, errors.New("암호를 입력하세요")
+	}
+	docs, err := s.store.All()
+	if err != nil {
+		return nil, err
+	}
+	index, err := findDocument(docs, id)
+	if err != nil {
+		return nil, err
+	}
+	if docs[index].Locked {
+		return nil, errors.New("이미 암호로 잠긴 문서입니다")
+	}
+	key, err := newLockKey(password)
+	if err != nil {
+		return nil, err
+	}
+	sealed, err := key.seal(docs[index].Content)
+	if err != nil {
+		return nil, err
+	}
+	docs[index].Content = sealed
+	docs[index].Locked = true
+	docs[index].Hint = strings.TrimSpace(hint)
+	// 링크 목록은 제목이라 그 자체로 내용을 짐작할 수 있으므로 남기지 않는다.
+	docs[index].Links = nil
+	if err := s.store.Replace(docs); err != nil {
+		return nil, err
+	}
+	s.rememberKey(id, key)
+	locked := docs[index]
+	s.present(&locked)
+	return &locked, nil
+}
+
+// Unlock은 암호를 확인해 잠긴 문서를 이번 실행 동안 열어 둔다.
+// 성공하면 본문이 담긴 문서를 돌려주고, 이후 저장도 다시 가능해진다.
+// 암호가 틀리면 그 사실만 알리는 오류를 돌려준다.
+func (s *Service) Unlock(id string, password string) (*types.Document, error) {
+	doc, err := s.store.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !doc.Locked {
+		s.present(doc)
+		return doc, nil
+	}
+	key, plain, err := openLockKey(password, doc.Content)
+	if err != nil {
+		return nil, err
+	}
+	s.rememberKey(id, key)
+	doc.Type = types.NormalizeType(doc.Type)
+	doc.Content = plain
+	doc.Links = ParseLinks(plain)
+	doc.Unlocked = true
+	return doc, nil
+}
+
+// Relock은 열어 둔 문서를 다시 잠근다. 암호는 그대로 남는다.
+// 자리를 비울 때 눌러 두면 다시 볼 때 암호를 물어본다.
+func (s *Service) Relock(id string) {
+	s.forgetKey(id)
+}
+
+// RemoveLock은 암호를 확인한 뒤 잠금을 없애고 본문을 평문으로 되돌린다.
+func (s *Service) RemoveLock(id string, password string) (*types.Document, error) {
+	docs, err := s.store.All()
+	if err != nil {
+		return nil, err
+	}
+	index, err := findDocument(docs, id)
+	if err != nil {
+		return nil, err
+	}
+	if !docs[index].Locked {
+		unlocked := docs[index]
+		s.present(&unlocked)
+		return &unlocked, nil
+	}
+	_, plain, err := openLockKey(password, docs[index].Content)
+	if err != nil {
+		return nil, err
+	}
+	docs[index].Content = plain
+	docs[index].Locked = false
+	docs[index].Hint = ""
+	docs[index].Links = ParseLinks(plain)
+	if err := s.store.Replace(docs); err != nil {
+		return nil, err
+	}
+	s.forgetKey(id)
+	opened := docs[index]
+	s.present(&opened)
+	return &opened, nil
 }
 
 // uniqueFolderName은 같은 상위 폴더 안에서 겹치지 않는 이름을 만든다.
