@@ -21,8 +21,12 @@ tasks:
     sources:
       - package.json
       - package-lock.json
+    # 디렉터리(node_modules)를 산출물로 적으면 Task가 파일을 하나도 찾지 못해
+    # 언제나 "오래됨"으로 보고 npm install을 다시 돌린다. dev 모드에서는 그
+    # 십몇 초 때문에 Vite가 늦게 떠서 앱이 개발 서버에 붙지 못한다.
+    # npm이 실제로 쓰는 파일을 산출물로 적어 다시 설치할 때만 돌게 한다.
     generates:
-      - node_modules
+      - node_modules/.package-lock.json
     preconditions:
       - sh: npm version
         msg: "Looks like npm isn't installed. Npm is part of the Node installer: https://nodejs.org/en/download/"
