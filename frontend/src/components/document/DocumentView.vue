@@ -22,6 +22,10 @@ import { Dialogs, Events } from '@wailsio/runtime'
 import { isDarkMode } from '../../theme'
 import ResizeHandle from '../common/ResizeHandle.vue'
 import FolderPlusIcon from './FolderPlusIcon.vue'
+import LockIcon from './LockIcon.vue'
+import NoEditIcon from './NoEditIcon.vue'
+import BlankScreenIcon from './BlankScreenIcon.vue'
+import KeyboardIcon from './KeyboardIcon.vue'
 import { usePaneVisible, usePaneWidth } from '../../panes'
 
 const sidebarWidth = usePaneWidth('document:sidebar', 240)
@@ -53,8 +57,13 @@ const selectedDocument = computed(() => documents.value.find(d => d.id === selec
 // 저장 말고 다른 작업의 실패도 같은 곳에서 보여 준다.
 const errorMessage = ref('')
 
+// 잠금 화면처럼 모달 밖에서도 오류를 보여 주는 곳이 있어 메시지 만들기를 나눠 둔다.
+function messageOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
 function reportError(e: unknown) {
-  errorMessage.value = e instanceof Error ? e.message : String(e)
+  errorMessage.value = messageOf(e)
 }
 
 function closeError() {
@@ -148,6 +157,203 @@ async function changeType(next: DocType) {
 function onPlainInput() {
   if (loadingDocument) return
   scheduleSave()
+}
+
+/* ---------- 읽기 전용 ---------- */
+
+// 다 쓴 문서를 실수로 고치거나 지우지 않도록 문서마다 읽기 전용을 켤 수 있다.
+// 설정은 문서에 저장되므로 앱을 다시 켜도 그대로 유지된다.
+const readOnly = computed(() => !!selectedDocument.value?.readOnly)
+
+// TUI Editor에는 읽기 전용 설정이 없으므로 내부 ProseMirror 뷰의 editable
+// 속성을 직접 바꾼다. 마크다운과 리치 텍스트는 각각 다른 뷰라 둘 다 손댄다.
+function applyEditable() {
+  const editable = !readOnly.value
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const internals = editor as any
+  for (const part of [internals?.mdEditor, internals?.wwEditor]) {
+    part?.view?.setProps({ editable: () => editable })
+  }
+}
+
+watch(readOnly, () => applyEditable())
+
+async function toggleReadOnly() {
+  const current = selectedDocument.value
+  if (!current) return
+  // 읽기 전용으로 바꾸면 그 뒤의 저장이 막히므로 편집 중이던 내용을 먼저 저장한다.
+  await flushSave()
+  try {
+    const saved = await DocumentService.SetReadOnly(current.id, !current.readOnly)
+    if (saved) replaceInList(saved)
+  } catch (e) {
+    reportError(e)
+  }
+}
+
+/* ---------- 암호 잠금 ---------- */
+
+// 문서에 암호를 걸면 본문이 암호화된 채로 저장된다. 암호를 확인하기 전에는
+// 목록·검색·미리보기에도 본문이 나오지 않고, 앱을 다시 켜면 다시 물어본다.
+const locked = computed(() => !!selectedDocument.value?.locked)
+const needsUnlock = computed(() => locked.value && !selectedDocument.value?.unlocked)
+
+// 편집기 자리에 대신 띄우는 암호 입력 화면의 상태.
+const unlockPassword = ref('')
+const unlockError = ref('')
+const unlockBusy = ref(false)
+const unlockInput = ref<HTMLInputElement | null>(null)
+
+// 잠긴 문서를 고르면 바로 암호를 칠 수 있게 입력칸에 초점을 준다.
+watch(needsUnlock, value => {
+  if (!value) return
+  nextTick(() => unlockInput.value?.focus())
+})
+
+// 암호를 걸거나 없애는 모달의 상태.
+const lockOpen = ref(false)
+const lockPassword = ref('')
+const lockConfirm = ref('')
+const lockHint = ref('')
+const lockError = ref('')
+const lockBusy = ref(false)
+
+function openLock() {
+  if (!selectedId.value || needsUnlock.value) return
+  lockPassword.value = ''
+  lockConfirm.value = ''
+  lockHint.value = selectedDocument.value?.hint || ''
+  lockError.value = ''
+  lockOpen.value = true
+}
+
+function closeLock() {
+  lockOpen.value = false
+  lockPassword.value = ''
+  lockConfirm.value = ''
+  lockError.value = ''
+}
+
+// 암호를 새로 걸어 문서를 잠근다.
+// 방금 정한 암호이므로 잠근 뒤에도 이번 실행에서는 그대로 편집을 이어간다.
+async function submitLock() {
+  const current = selectedDocument.value
+  if (!current || lockBusy.value) return
+  if (!lockPassword.value) {
+    lockError.value = '암호를 입력하세요'
+    return
+  }
+  if (lockPassword.value !== lockConfirm.value) {
+    lockError.value = '두 번 입력한 암호가 다릅니다'
+    return
+  }
+  // 편집 중이던 내용까지 함께 잠기도록 먼저 저장한다.
+  await flushSave()
+  lockBusy.value = true
+  try {
+    const saved = await DocumentService.Lock(current.id, lockPassword.value, lockHint.value.trim())
+    if (saved) replaceInList(saved)
+    closeLock()
+  } catch (e) {
+    lockError.value = messageOf(e)
+  } finally {
+    lockBusy.value = false
+  }
+}
+
+// 암호를 확인해 이번 실행 동안 문서를 열어 둔다.
+async function submitUnlock() {
+  const current = selectedDocument.value
+  if (!current || unlockBusy.value) return
+  unlockBusy.value = true
+  unlockError.value = ''
+  try {
+    const opened = await DocumentService.Unlock(current.id, unlockPassword.value)
+    if (opened) {
+      replaceInList(opened)
+      titleInput.value = opened.title
+      applyType(typeInfo(opened.type).id, opened.content || '')
+    }
+    unlockPassword.value = ''
+  } catch (e) {
+    unlockError.value = messageOf(e)
+  } finally {
+    unlockBusy.value = false
+  }
+}
+
+// 자리를 비울 때 다시 잠근다. 암호는 그대로 남고 화면에서도 본문을 지운다.
+async function relock() {
+  const current = selectedDocument.value
+  if (!current) return
+  await flushSave()
+  closeLock()
+  try {
+    await DocumentService.Relock(current.id)
+    const doc = await DocumentService.Get(current.id)
+    if (doc) replaceInList(doc)
+    // 편집기에 남아 있던 본문도 지워야 잠근 의미가 있다.
+    applyType(docType.value, '')
+  } catch (e) {
+    reportError(e)
+  }
+}
+
+// 암호를 확인한 뒤 잠금을 아예 없앤다. 본문은 다시 평문으로 저장된다.
+async function removeLock() {
+  const current = selectedDocument.value
+  if (!current || lockBusy.value) return
+  if (!lockPassword.value) {
+    lockError.value = '암호를 입력하세요'
+    return
+  }
+  lockBusy.value = true
+  try {
+    const saved = await DocumentService.RemoveLock(current.id, lockPassword.value)
+    if (saved) {
+      replaceInList(saved)
+      applyType(typeInfo(saved.type).id, saved.content || '')
+    }
+    closeLock()
+  } catch (e) {
+    lockError.value = messageOf(e)
+  } finally {
+    lockBusy.value = false
+  }
+}
+
+/* ---------- 빈 화면 ---------- */
+
+// 아무 문서도 띄우지 않고 화면을 비워 둘 수 있다. 생각을 정리할 때 쓰므로,
+// 모듈을 오갔다 돌아와도 비워 둔 상태가 유지되도록 기억해 둔다.
+const BLANK_KEY = 'working:document-blank'
+
+function loadBlank(): boolean {
+  try {
+    return localStorage.getItem(BLANK_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+const blankScreen = ref(loadBlank())
+
+watch(blankScreen, value => {
+  try {
+    localStorage.setItem(BLANK_KEY, String(value))
+  } catch {
+    // 저장소를 쓸 수 없어도 현재 세션의 상태는 그대로 유지된다.
+  }
+})
+
+// 열어 둔 문서를 닫고 화면을 비운다. 문서는 그대로 남는다.
+async function clearScreen() {
+  hidePreview()
+  await flushSave()
+  selectedId.value = ''
+  titleInput.value = ''
+  applyType(docType.value, '')
+  blankScreen.value = true
 }
 
 /* ---------- 폴더 트리 ---------- */
@@ -536,6 +742,134 @@ function renderWikiLinks(node: { literal: string | null }) {
   return tokens
 }
 
+/* ---------- 단축키 ---------- */
+
+// 글자와 문단 서식을 손을 옮기지 않고 바로 적용할 수 있게 단축키를 쓴다.
+// 굵게·기울임처럼 편집기에 이미 있는 것은 그대로 두고, 제목·링크처럼 빠진
+// 것만 onEditorKeydown에서 채운다. 아래 목록은 도움말 모달에 그대로 보여 준다.
+interface ShortcutGroup {
+  title: string
+  items: Array<{ keys: string; label: string }>
+}
+
+const SHORTCUT_GROUPS: ShortcutGroup[] = [
+  {
+    title: '글자 효과',
+    items: [
+      { keys: 'Ctrl+B', label: '굵게' },
+      { keys: 'Ctrl+I', label: '기울임' },
+      { keys: 'Ctrl+S', label: '취소선' },
+      { keys: 'Ctrl+E', label: '인라인 코드' },
+    ],
+  },
+  {
+    title: '문단',
+    items: [
+      { keys: 'Ctrl+1 ~ Ctrl+6', label: '제목 1~6단계' },
+      { keys: 'Ctrl+0', label: '제목을 떼고 본문으로' },
+      { keys: 'Alt+Q', label: '인용' },
+      { keys: 'Ctrl+Shift+P', label: '코드 블록' },
+      { keys: 'Ctrl+L', label: '구분선' },
+    ],
+  },
+  {
+    title: '목록',
+    items: [
+      { keys: 'Ctrl+U', label: '순서 없는 목록' },
+      { keys: 'Ctrl+O', label: '순서 있는 목록' },
+      { keys: 'Alt+T', label: '체크리스트' },
+      { keys: 'Tab / Shift+Tab', label: '한 단계 안으로 / 밖으로' },
+    ],
+  },
+  {
+    title: '링크',
+    items: [
+      { keys: 'Ctrl+K', label: '고른 글자에 링크 주소 넣기' },
+      { keys: 'Ctrl+Shift+K', label: '고른 글자를 [[문서 링크]]로' },
+    ],
+  },
+  {
+    title: '편집',
+    items: [
+      { keys: 'Ctrl+Z', label: '되돌리기' },
+      { keys: 'Ctrl+Shift+Z', label: '다시 실행' },
+    ],
+  },
+]
+
+const shortcutsOpen = ref(false)
+
+// 편집기 안에서 누른 키를 받아 편집기에 없는 단축키를 채운다.
+// 읽기 전용이거나 보조키가 맞지 않으면 그냥 넘긴다.
+function onEditorKeydown(_mode: 'markdown' | 'wysiwyg', event: KeyboardEvent) {
+  if (readOnly.value) return
+  // 한글을 조합하는 중의 키 입력은 입력기가 쓰고 있으므로 건드리지 않는다.
+  if (event.isComposing || event.keyCode === 229) return
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return
+
+  const key = event.key.toLowerCase()
+
+  // Ctrl+1~6은 제목 단계, Ctrl+0은 제목을 떼고 본문으로 되돌린다.
+  if (!event.shiftKey && /^[1-6]$/.test(key)) {
+    event.preventDefault()
+    editor?.exec('heading', { level: Number(key) })
+    return
+  }
+  if (!event.shiftKey && key === '0') {
+    event.preventDefault()
+    clearHeading()
+    return
+  }
+  if (key === 'k') {
+    event.preventDefault()
+    if (event.shiftKey) insertWikiLink()
+    else insertLink()
+    return
+  }
+  if (key === 'e' && !event.shiftKey) {
+    event.preventDefault()
+    editor?.exec('code')
+  }
+}
+
+// Ctrl+0: 제목을 떼고 본문으로 되돌린다.
+// 마크다운 모드에서는 편집기의 heading 명령이 줄 앞에 공백 하나를 남기므로,
+// 고른 줄들의 제목 기호만 직접 떼어 낸다.
+function clearHeading() {
+  if (!editor) return
+  if (!editor.isMarkdownMode()) {
+    editor.exec('heading', { level: 0 })
+    return
+  }
+  // 마크다운 모드의 선택 위치는 [[시작 줄, 칸], [끝 줄, 칸]] 형태다.
+  const [from, to] = editor.getSelection() as [[number, number], [number, number]]
+  const lines = editor.getMarkdown().split('\n')
+  const firstLine = from[0]
+  const lastLine = to[0]
+  const stripped = lines
+    .slice(firstLine - 1, lastLine)
+    .map(line => line.replace(/^\s{0,3}#{1,6}\s*/, ''))
+  if (!stripped.length) return
+  editor.setSelection([firstLine, 1], [lastLine, (lines[lastLine - 1] || '').length + 1])
+  editor.replaceSelection(stripped.join('\n'))
+}
+
+// Ctrl+K: 고른 글자를 링크 글자로 삼고 주소만 물어본다.
+function insertLink() {
+  const text = editor?.getSelectedText() || ''
+  const url = prompt('링크 주소', 'https://')
+  if (url === null) return
+  const trimmed = url.trim()
+  if (!trimmed) return
+  editor?.exec('addLink', { linkUrl: trimmed, linkText: text || trimmed })
+}
+
+// Ctrl+Shift+K: 이 앱의 문서 링크는 [[제목]] 형식이라 고른 글자를 감싸 준다.
+function insertWikiLink() {
+  const selected = (editor?.getSelectedText() || '').trim()
+  editor?.replaceSelection(`[[${selected}]]`)
+}
+
 /* ---------- 에디터 ---------- */
 
 function createEditor(initialContent: string) {
@@ -568,6 +902,9 @@ function createEditor(initialContent: string) {
     if (loadingDocument) return
     scheduleSave()
   })
+  // 편집기에 없는 단축키를 채운다. 마크다운·리치 텍스트 두 모드에서 모두 온다.
+  editor.on('keydown', onEditorKeydown)
+  applyEditable()
 }
 
 function destroyEditor() {
@@ -582,6 +919,7 @@ watch(isDarkMode, () => {
   nextTick(() => {
     createEditor(content)
     applyType(docType.value, content)
+    applyEditable()
   })
 })
 
@@ -611,8 +949,14 @@ async function selectDocument(id: string) {
   try {
     const doc = await DocumentService.Get(id)
     if (!doc) return
+    // 읽기 전용·잠금 상태가 그 사이 바뀌었을 수 있으므로 목록도 함께 갱신한다.
+    replaceInList(doc)
     selectedId.value = doc.id
     titleInput.value = doc.title
+    blankScreen.value = false
+    unlockPassword.value = ''
+    unlockError.value = ''
+    // 잠긴 문서는 본문이 비어 오므로 편집기 대신 암호 입력 화면이 뜬다.
     applyType(typeInfo(doc.type).id, doc.content || '')
   } catch (e) {
     reportError(e)
@@ -620,6 +964,8 @@ async function selectDocument(id: string) {
 }
 
 function scheduleSave() {
+  // 읽기 전용과 아직 열지 않은 잠긴 문서는 저장 자체를 시작하지 않는다.
+  if (readOnly.value || needsUnlock.value) return
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => void save(), 700)
 }
@@ -667,6 +1013,7 @@ async function createDocument(title = '', folderId = '') {
     await refreshDocuments()
     selectedId.value = doc.id
     titleInput.value = doc.title
+    blankScreen.value = false
     applyType(typeInfo(doc.type).id, '')
   } catch (e) {
     reportError(e)
@@ -731,7 +1078,9 @@ function onFilesImported() {
 
 async function deleteDocument(doc: Document) {
   hidePreview()
-  if (!confirm(`문서 "${doc.title}" 을(를) 삭제할까요?`)) return
+  // 잠긴 문서는 본문을 확인할 수 없으므로 지우기 전에 한 번 더 알려 준다.
+  const warning = doc.locked ? '\n암호로 잠긴 문서입니다. 지우면 되돌릴 수 없습니다.' : ''
+  if (!confirm(`문서 "${doc.title}" 을(를) 삭제할까요?${warning}`)) return
   try {
     await DocumentService.Delete(doc.id)
     if (selectedId.value === doc.id) {
@@ -794,6 +1143,15 @@ const documentInfo = computed(() => {
     title: titleInput.value.trim() || current.title,
     type: typeInfo(current.type),
     folderId: folderOf(current),
+    // 읽기 전용과 암호 잠금은 문서마다 다르므로 정보에서도 한눈에 확인한다.
+    protection: current.readOnly && current.locked
+      ? '읽기 전용 · 암호 잠금'
+      : current.readOnly
+        ? '읽기 전용'
+        : current.locked
+          ? '암호 잠금'
+          : '없음',
+    hint: current.hint || '',
     size: formatBytes(new TextEncoder().encode(content).length),
     characters: [...content].length,
     createdAt: formatDate(current.createdAt),
@@ -834,12 +1192,14 @@ async function openBacklink(doc: Document) {
   await selectDocument(doc.id)
 }
 
-// 모달과 형식 드롭다운은 Esc로 닫는다.
+// 모달(정보·단축키·잠금·오류)과 형식 드롭다운은 Esc로 닫는다.
 // 한글을 조합하는 중의 Esc는 입력기가 조합을 취소하려는 것이므로 넘긴다.
 function onKeydown(event: KeyboardEvent) {
   if (event.isComposing || event.keyCode === 229) return
   if (event.key !== 'Escape') return
   if (errorMessage.value) closeError()
+  else if (shortcutsOpen.value) shortcutsOpen.value = false
+  else if (lockOpen.value) closeLock()
   else if (infoOpen.value) closeInfo()
   typeMenuOpen.value = false
 }
@@ -899,7 +1259,8 @@ onMounted(async () => {
   // 창으로 끌어다 놓은 파일이 문서로 가져와지면 목록을 다시 그린다.
   Events.On('document:files-imported', onFilesImported)
   await refreshTree()
-  if (documents.value.length) await selectDocument(documents.value[0].id)
+  // 화면을 비워 둔 채 나갔다면 돌아와도 비워 둔다.
+  if (!blankScreen.value && documents.value.length) await selectDocument(documents.value[0].id)
 })
 
 onBeforeUnmount(() => {
@@ -940,6 +1301,8 @@ onBeforeUnmount(() => {
             <div class="row-main">
               <span class="doc-type" :title="typeInfo(doc.type).label">{{ typeInfo(doc.type).icon }}</span>
               <span class="row-name">{{ doc.title }}</span>
+              <span v-if="doc.locked" class="row-mark" title="암호로 잠긴 문서"><LockIcon :size="13" /></span>
+              <span v-else-if="doc.readOnly" class="row-mark" title="읽기 전용 문서"><NoEditIcon :size="13" /></span>
               <button class="icon-btn sm danger row-action" title="문서 삭제" @click.stop="deleteDocument(doc)">✕</button>
             </div>
             <span class="row-date">{{ formatDate(doc.updatedAt) }}</span>
@@ -992,6 +1355,8 @@ onBeforeUnmount(() => {
                 <div class="row-main">
                   <span class="doc-type" :title="typeInfo(row.document!.type).label">{{ typeInfo(row.document!.type).icon }}</span>
                   <span class="row-name">{{ row.document!.title }}</span>
+                  <span v-if="row.document!.locked" class="row-mark" title="암호로 잠긴 문서"><LockIcon :size="13" /></span>
+                  <span v-else-if="row.document!.readOnly" class="row-mark" title="읽기 전용 문서"><NoEditIcon :size="13" /></span>
                   <button class="icon-btn sm danger row-action" title="문서 삭제" @click.stop="deleteDocument(row.document!)">✕</button>
                 </div>
                 <span class="row-date">{{ formatDate(row.document!.updatedAt) }}</span>
@@ -1025,7 +1390,8 @@ onBeforeUnmount(() => {
       >
         <strong class="preview-title">{{ hoverDocument.title }}</strong>
         <span class="preview-date">{{ typeInfo(hoverDocument.type).label }} · {{ formatDate(hoverDocument.updatedAt) }}</span>
-        <p v-if="previewText(hoverDocument.content)" class="preview-body">{{ previewText(hoverDocument.content) }}</p>
+        <p v-if="hoverDocument.locked && !hoverDocument.unlocked" class="preview-body empty">암호로 잠긴 문서입니다</p>
+        <p v-else-if="previewText(hoverDocument.content)" class="preview-body">{{ previewText(hoverDocument.content) }}</p>
         <p v-else class="preview-body empty">내용이 비어 있습니다</p>
       </div>
     </Teleport>
@@ -1045,7 +1411,7 @@ onBeforeUnmount(() => {
           <button
             class="type-button"
             type="button"
-            :disabled="!selectedId"
+            :disabled="!selectedId || needsUnlock"
             :title="`형식: ${currentType.label} (눌러서 변경)`"
             :aria-expanded="typeMenuOpen"
             @click="typeMenuOpen = !typeMenuOpen"
@@ -1074,6 +1440,7 @@ onBeforeUnmount(() => {
           class="title-input"
           :placeholder="selectedDocument?.title || '문서 제목'"
           :disabled="!selectedId"
+          :readonly="readOnly || needsUnlock"
           @input="onTitleInput"
         />
         <button
@@ -1089,6 +1456,25 @@ onBeforeUnmount(() => {
         <button
           class="header-icon-button"
           type="button"
+          :class="{ active: readOnly }"
+          :aria-pressed="readOnly"
+          :disabled="!selectedId || needsUnlock"
+          :title="readOnly ? '읽기 전용 끄기 (수정 허용)' : '읽기 전용 켜기 (수정 금지)'"
+          aria-label="읽기 전용"
+          @click="toggleReadOnly"
+        ><NoEditIcon /></button>
+        <button
+          class="header-icon-button"
+          type="button"
+          :class="{ active: locked }"
+          :disabled="!selectedId || needsUnlock"
+          :title="locked ? '문서 잠금 관리 (다시 잠그기·잠금 없애기)' : '암호로 잠그기'"
+          aria-label="암호 잠금"
+          @click="openLock"
+        ><LockIcon :open="!locked" /></button>
+        <button
+          class="header-icon-button"
+          type="button"
           :disabled="!selectedId"
           title="파일로 내보내기"
           aria-label="파일로 내보내기"
@@ -1098,6 +1484,21 @@ onBeforeUnmount(() => {
           class="header-icon-button"
           type="button"
           :disabled="!selectedId"
+          title="문서를 닫고 화면 비우기"
+          aria-label="화면 비우기"
+          @click="clearScreen"
+        ><BlankScreenIcon /></button>
+        <button
+          class="header-icon-button"
+          type="button"
+          title="단축키 보기"
+          aria-label="단축키 보기"
+          @click="shortcutsOpen = true"
+        ><KeyboardIcon /></button>
+        <button
+          class="header-icon-button"
+          type="button"
+          :disabled="!selectedId || needsUnlock"
           title="문서 정보"
           aria-label="문서 정보"
           @click="openInfo"
@@ -1105,12 +1506,42 @@ onBeforeUnmount(() => {
       </header>
 
       <div v-show="!selectedId" class="state">
-        <p>왼쪽에서 문서를 고르거나 새 문서를 만드세요.</p>
-        <p class="hint">본문에 <code>[[다른 문서 제목]]</code> 을 적으면 미리보기에서 눌러 이동할 수 있습니다.</p>
+        <!-- 스스로 화면을 비운 경우에는 안내를 줄여 생각을 방해하지 않는다. -->
+        <template v-if="blankScreen">
+          <p>화면을 비워 두었습니다.</p>
+          <p class="hint">생각이 정리되면 왼쪽에서 문서를 고르거나 새 문서를 만드세요.</p>
+        </template>
+        <template v-else>
+          <p>왼쪽에서 문서를 고르거나 새 문서를 만드세요.</p>
+          <p class="hint">본문에 <code>[[다른 문서 제목]]</code> 을 적으면 미리보기에서 눌러 이동할 수 있습니다.</p>
+        </template>
+      </div>
+
+      <!-- 잠긴 문서는 편집기 대신 암호 입력 화면을 띄운다. -->
+      <div v-if="selectedId && needsUnlock" class="lock-gate">
+        <form class="lock-card" @submit.prevent="submitUnlock">
+          <LockIcon class="lock-mark" :size="34" />
+          <h2>암호로 잠긴 문서</h2>
+          <p class="hint">암호를 넣으면 이 문서를 볼 수 있습니다. 앱을 다시 켜면 다시 물어봅니다.</p>
+          <p v-if="selectedDocument?.hint" class="lock-hint">힌트: {{ selectedDocument.hint }}</p>
+          <div class="lock-form">
+            <input
+              ref="unlockInput"
+              v-model="unlockPassword"
+              class="lock-input"
+              type="password"
+              autocomplete="off"
+              placeholder="암호"
+            />
+            <button class="modal-button primary" type="submit" :disabled="unlockBusy">열기</button>
+          </div>
+          <p v-if="unlockError" class="error-text">{{ unlockError }}</p>
+        </form>
       </div>
 
       <!-- 에디터는 한 번만 만들고 문서를 바꿔 끼우므로 v-if 대신 v-show로 감춘다. -->
-      <div v-show="selectedId" class="editor-wrap">
+      <div v-show="selectedId && !needsUnlock" class="editor-wrap" :class="{ readonly: readOnly }">
+        <p v-if="readOnly" class="readonly-banner">읽기 전용 문서입니다. 고치려면 머리글의 읽기 전용 버튼을 눌러 끄세요.</p>
         <div v-show="docType !== 'text'" ref="editorElement" class="editor-host" @click="onEditorClick"></div>
         <textarea
           v-show="docType === 'text'"
@@ -1118,6 +1549,7 @@ onBeforeUnmount(() => {
           class="plain-editor"
           :class="{ wrap: wrapText }"
           spellcheck="false"
+          :readonly="readOnly"
           placeholder="서식 없는 텍스트를 그대로 편집합니다."
           @input="onPlainInput"
         ></textarea>
@@ -1148,6 +1580,11 @@ onBeforeUnmount(() => {
                 <option v-for="option in folderOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
               </select>
             </dd>
+            <dt>보호</dt>
+            <dd>
+              {{ documentInfo.protection }}
+              <span v-if="documentInfo.hint" class="muted">(힌트: {{ documentInfo.hint }})</span>
+            </dd>
             <dt>용량</dt>
             <dd>{{ documentInfo.size }} <span class="muted">({{ documentInfo.characters.toLocaleString() }}자)</span></dd>
             <dt>생성일</dt>
@@ -1163,6 +1600,87 @@ onBeforeUnmount(() => {
               </li>
             </ul>
             <p v-else class="hint">아직 이 문서를 링크한 문서가 없습니다.</p>
+          </section>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 암호 잠금: 걸기 전에는 새 암호를, 걸린 뒤에는 다시 잠그기와 없애기를 다룬다. -->
+    <Teleport to="body">
+      <div v-if="lockOpen && selectedDocument" class="modal-overlay" @click.self="closeLock">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="문서 암호 잠금">
+          <header class="modal-header">
+            <h2>{{ locked ? '문서 잠금 관리' : '문서에 암호 걸기' }}</h2>
+            <button class="icon-btn" type="button" title="닫기" @click="closeLock">✕</button>
+          </header>
+
+          <template v-if="!locked">
+            <p class="hint">
+              암호를 걸면 본문이 암호화되어 저장됩니다. 암호는 어디에도 저장하지 않으므로
+              잊으면 본문을 되살릴 수 없습니다.
+            </p>
+            <form class="lock-fields" @submit.prevent="submitLock">
+              <label>
+                <span>암호</span>
+                <input v-model="lockPassword" type="password" autocomplete="new-password" />
+              </label>
+              <label>
+                <span>암호 확인</span>
+                <input v-model="lockConfirm" type="password" autocomplete="new-password" />
+              </label>
+              <label>
+                <span>힌트 (선택)</span>
+                <input v-model="lockHint" type="text" placeholder="암호를 떠올릴 단서" />
+              </label>
+              <p v-if="lockError" class="error-text">{{ lockError }}</p>
+              <div class="modal-actions">
+                <button class="modal-button" type="button" @click="closeLock">취소</button>
+                <button class="modal-button primary" type="submit" :disabled="lockBusy">잠그기</button>
+              </div>
+            </form>
+          </template>
+
+          <template v-else>
+            <p class="hint">이 문서는 암호로 잠겨 있고, 지금은 열려 있어 편집할 수 있습니다.</p>
+            <div class="modal-actions">
+              <button class="modal-button primary" type="button" @click="relock">지금 다시 잠그기</button>
+            </div>
+            <form class="lock-fields spaced" @submit.prevent="removeLock">
+              <label>
+                <span>암호를 넣으면 잠금을 없앨 수 있습니다</span>
+                <input v-model="lockPassword" type="password" autocomplete="off" />
+              </label>
+              <p v-if="lockError" class="error-text">{{ lockError }}</p>
+              <div class="modal-actions">
+                <button class="modal-button" type="button" @click="closeLock">취소</button>
+                <button class="modal-button danger" type="submit" :disabled="lockBusy">잠금 없애기</button>
+              </div>
+            </form>
+          </template>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 단축키 도움말. 편집기에 원래 있던 것과 이 앱이 더한 것을 함께 적는다. -->
+    <Teleport to="body">
+      <div v-if="shortcutsOpen" class="modal-overlay" @click.self="shortcutsOpen = false">
+        <div class="modal wide" role="dialog" aria-modal="true" aria-label="단축키">
+          <header class="modal-header">
+            <h2>단축키</h2>
+            <button class="icon-btn" type="button" title="닫기" @click="shortcutsOpen = false">✕</button>
+          </header>
+          <p class="hint">
+            리치 텍스트와 마크다운 문서에서 쓸 수 있습니다. 일반 텍스트 문서와
+            읽기 전용 문서에는 적용되지 않습니다.
+          </p>
+          <section v-for="group in SHORTCUT_GROUPS" :key="group.title" class="shortcut-group">
+            <h3>{{ group.title }}</h3>
+            <dl class="shortcut-list">
+              <template v-for="item in group.items" :key="item.keys">
+                <dt><kbd>{{ item.keys }}</kbd></dt>
+                <dd>{{ item.label }}</dd>
+              </template>
+            </dl>
           </section>
         </div>
       </div>
@@ -1278,6 +1796,9 @@ onBeforeUnmount(() => {
   font-size: 11px;
   font-weight: 700;
 }
+
+/* 목록의 잠금·읽기 전용 표시. 무엇인지 알아볼 정도로만 작게 둔다. */
+.row-mark { display: inline-flex; flex: 0 0 auto; align-items: center; color: var(--muted); }
 
 .root-drop { flex: 1; min-height: 48px; }
 .root-drop.drop-target { background: rgba(79, 124, 255, 0.12); }
@@ -1475,7 +1996,109 @@ onBeforeUnmount(() => {
 }
 .plain-editor.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 
-/* 모달(문서 정보·오류) */
+/* 읽기 전용은 편집기의 도구 모음까지 흐리게 해 못 누른다는 것을 분명히 한다. */
+.readonly-banner {
+  margin: 0;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12px;
+}
+.editor-wrap.readonly :deep(.toastui-editor-toolbar) {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* 잠긴 문서의 암호 입력 화면. 편집기 자리를 그대로 차지한다. */
+.lock-gate {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 24px;
+}
+.lock-card {
+  width: min(360px, 100%);
+  padding: 22px 24px 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  text-align: center;
+}
+.lock-mark { display: block; margin: 0 auto 10px; color: var(--accent); }
+.lock-card h2 { margin: 0 0 8px; font-size: 15px; }
+.lock-hint {
+  margin: 10px 0 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.lock-form { display: flex; gap: 6px; margin-top: 14px; }
+.lock-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.lock-input:focus { border-color: var(--accent); outline: none; }
+
+/* 잠금 모달의 입력칸 묶음 */
+.lock-fields { display: flex; flex-direction: column; gap: 10px; }
+.lock-fields.spaced { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.lock-fields label { display: flex; flex-direction: column; gap: 4px; }
+.lock-fields label span { color: var(--muted); font-size: 12px; }
+.lock-fields input {
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.lock-fields input:focus { border-color: var(--accent); outline: none; }
+
+/* 단축키 목록 */
+.shortcut-group { margin-top: 16px; }
+.shortcut-group h3 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.shortcut-list {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+.shortcut-list dt { white-space: nowrap; }
+.shortcut-list dd { margin: 0; min-width: 0; color: var(--muted); }
+kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: "D2Coding", "Courier New", monospace;
+  font-size: 11px;
+}
+
+/* 모달(문서 정보·잠금·단축키·오류) */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -1498,6 +2121,7 @@ onBeforeUnmount(() => {
   color: var(--text);
 }
 .modal.error { border-color: var(--danger); }
+.modal.wide { width: min(520px, 100%); }
 .modal-header {
   display: flex;
   align-items: center;
@@ -1514,7 +2138,7 @@ onBeforeUnmount(() => {
   font-size: 13px;
   overflow-wrap: anywhere;
 }
-.modal-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .modal-button {
   padding: 6px 14px;
   border: 1px solid var(--border);
@@ -1523,7 +2147,11 @@ onBeforeUnmount(() => {
   color: var(--text);
   font-size: 13px;
 }
-.modal-button:hover { border-color: var(--accent); color: var(--accent); }
+.modal-button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.modal-button:disabled { opacity: 0.5; cursor: default; }
+.modal-button.primary { border-color: var(--accent); color: var(--accent); }
+.modal-button.danger { color: var(--danger); }
+.modal-button.danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
 
 .info-grid {
   display: grid;
