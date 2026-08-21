@@ -2009,6 +2009,15 @@ onBeforeUnmount(() => {
   opacity: 0.45;
   pointer-events: none;
 }
+/* 읽기 전용이어도 글을 끌어 골라 복사할 수는 있어야 한다.
+   앱 전체에는 user-select: none이 걸려 있고 편집기가 편집 가능일 때만 브라우저가
+   예외를 두므로, 편집을 막은 동안에는 본문에만 선택을 다시 열어 준다. */
+.editor-wrap.readonly :deep(.ProseMirror),
+.editor-wrap.readonly :deep(.toastui-editor-contents) {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
 
 /* 잠긴 문서의 암호 입력 화면. 편집기 자리를 그대로 차지한다. */
 .lock-gate {
